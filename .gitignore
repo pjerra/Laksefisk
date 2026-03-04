@@ -1,8 +1,7 @@
 __pycache__/
 *.pyc
 *.pyo
-*.txt
-!requirements.txt
+config.json
 .env
 *.log
 dist/

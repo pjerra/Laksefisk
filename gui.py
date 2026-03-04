@@ -5,12 +5,12 @@ Window sits in the TOP strip of the screen (above WoW's capture zone).
 WowScreen captures the centre half, so the top quarter is safe.
 Always-on-top so it stays visible over WoW.
 
-Uses Better Fishing addon — one key for cast + interact/loot.
 Lure macro — presses lure key every 10 min 10 sec, waits 5 sec.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -27,6 +27,7 @@ from PIL import Image, ImageDraw, ImageTk
 import wow_process
 from bite_watcher import PositionBiteWatcher
 from bobber_finder import SearchBobberFinder
+from fish_tracker import FishTracker, find_wow_log_path
 from fishing_bot import LaksefiskBot
 from models import BobberBitmapEvent, FishingAction, FishingEvent
 from pixel_classifier import ClassifierMode, PixelClassifier
@@ -34,10 +35,40 @@ from wow_screen import WowScreen
 
 logger = logging.getLogger("Laksefisk")
 
-CAST_KEY_FILE = "castkey.txt"
-LURE_KEY_FILE = "lurekey.txt"
-LOOT_SETTINGS_FILE = "lootwait.txt"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(_SCRIPT_DIR, "config.json")
 STRIKE_VALUE = 7
+
+DEFAULT_CONFIG = {
+    "cast_key": 0x34,
+    "lure_key": None,
+    "loot_wait_min": 0.5,
+    "loot_wait_max": 2.0,
+    "colour_mode": "Red",
+    "colour_multiplier": 0.5,
+    "colour_closeness_multiplier": 2.0,
+    "wow_log_path": None,
+}
+
+
+def _load_config() -> dict:
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE) as f:
+                cfg = json.load(f)
+            return {**DEFAULT_CONFIG, **cfg}
+    except Exception:
+        pass
+    return dict(DEFAULT_CONFIG)
+
+
+def _save_config(cfg: dict):
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
+
 
 # Colours matching the original WPF Material Design theme
 BG_WHITE = "#FFFFFF"
@@ -217,24 +248,28 @@ class FlyingFishOverlay:
 # ---------------------------------------------------------------------------
 
 class ColourConfigWindow(tk.Toplevel):
-    def __init__(self, parent, pixel_classifier: PixelClassifier):
+    def __init__(self, parent, pixel_classifier: PixelClassifier, on_change=None):
         super().__init__(parent)
         self.title("Colour Explorer")
         self.configure(bg=BG_WHITE)
         self.pc = pixel_classifier
+        self._on_change = on_change
         self._screen_capture: Optional[Image.Image] = None
         self._colour_photo: Optional[ImageTk.PhotoImage] = None
         self._screen_photo: Optional[ImageTk.PhotoImage] = None
 
+        self.attributes("-topmost", True)
+        self._build()
+        self._update_labels()
+        self._render(True)
+
+        # Set geometry AFTER content is built so it sticks
+        self.update_idletasks()
         win_w, win_h = 620, 420
         sx = (self.winfo_screenwidth() - win_w) // 2
         sy = (self.winfo_screenheight() - win_h) // 2
         self.geometry(f"{win_w}x{win_h}+{sx}+{sy}")
         self.resizable(False, False)
-        self.attributes("-topmost", True)
-        self._build()
-        self._update_labels()
-        self._render(True)
 
     def _build(self):
         top = tk.Frame(self, bg=BG_WHITE)
@@ -303,16 +338,22 @@ class ColourConfigWindow(tk.Toplevel):
         self.pc.mode = ClassifierMode.Red if self._mode_var.get() == "Red" else ClassifierMode.Blue
         self._update_labels()
         self._render(True)
+        if self._on_change:
+            self._on_change()
 
     def _on_mult(self):
         self.pc.colour_multiplier = self._mult_var.get() / 100
         self._update_labels()
         self._render(True)
+        if self._on_change:
+            self._on_change()
 
     def _on_close(self):
         self.pc.colour_closeness_multiplier = self._close_var.get() / 100
         self._update_labels()
         self._render(True)
+        if self._on_change:
+            self._on_change()
 
     def _on_capture(self):
         self._screen_capture = WowScreen.get_bitmap()
@@ -364,7 +405,8 @@ class ColourConfigWindow(tk.Toplevel):
                     sr, sg, sb = spix[x, y][:3]
                     if self.pc.is_match(sr, sg, sb):
                         spix[x, y] = (0, 0, 255) if self.pc.mode == ClassifierMode.Blue else (255, 0, 0)
-            bmp.thumbnail((256, 256), Image.LANCZOS)
+            # Resize to exactly 256x256 so the window layout doesn't shift
+            bmp = bmp.resize((256, 256), Image.LANCZOS)
             self._screen_photo = ImageTk.PhotoImage(bmp)
             self._screen_label.config(image=self._screen_photo)
 
@@ -391,23 +433,35 @@ class App(tk.Tk):
         # Always on top so WoW doesn't cover it
         self.attributes("-topmost", True)
 
+        self._cfg = _load_config()
+
         self._pc = PixelClassifier()
+        self._pc.colour_multiplier = self._cfg["colour_multiplier"]
+        self._pc.colour_closeness_multiplier = self._cfg["colour_closeness_multiplier"]
+        self._pc.mode = ClassifierMode.Red if self._cfg["colour_mode"] == "Red" else ClassifierMode.Blue
         self._pc.set_configuration(wow_process.is_wow_classic())
         self._bobber_finder = SearchBobberFinder(self._pc)
         self._bite_watcher = PositionBiteWatcher(STRIKE_VALUE)
         self._bot: Optional[LaksefiskBot] = None
         self._bot_thread: Optional[threading.Thread] = None
-        self._cast_key = self._load_key(CAST_KEY_FILE, 0x34)       # '4'
-        self._lure_key: Optional[int] = self._load_key(LURE_KEY_FILE, None)
-        self._loot_min, self._loot_max = self._load_loot_settings()
+        self._cast_key = self._cfg["cast_key"]
+        self._lure_key: Optional[int] = self._cfg["lure_key"]
+        self._loot_min = self._cfg["loot_wait_min"]
+        self._loot_max = self._cfg["loot_wait_max"]
 
         self._log_queue: queue.Queue = queue.Queue()
         self._screenshot_photo: Optional[ImageTk.PhotoImage] = None
+
+        # Fish tracker
+        log_path = self._cfg.get("wow_log_path") or find_wow_log_path()
+        self._fish_tracker = FishTracker(log_path)
+        self._fish_tracker.set_on_update(lambda: self.after(0, self._update_fish_display))
 
         self._bobber_finder.bitmap_callbacks.append(self._on_bitmap_event)
 
         self._build_ui()
         self._setup_logging()
+        self._fish_tracker.start()
         self._poll()
 
     # ------------------------------------------------------------------
@@ -462,6 +516,7 @@ class App(tk.Tk):
                               bg=LIGHT_BLUE, fg=TEXT_DARK, relief="flat", bd=2)
         cast_entry.pack(side="left", padx=2)
         cast_entry.bind("<FocusIn>", lambda e: self._cast_key_var.set(""))
+        cast_entry.bind("<FocusOut>", lambda e: self._cast_key_var.set(self._vk_to_label(self._cast_key)))
         cast_entry.bind("<KeyRelease>", self._on_cast_key_entry)
 
         # Loot delay (min–max seconds)
@@ -474,6 +529,8 @@ class App(tk.Tk):
                                    font=("Segoe UI", 9), bg=LIGHT_BLUE, relief="flat",
                                    command=self._on_loot_delay_change)
         loot_min_spin.pack(side="left", padx=1)
+        loot_min_spin.bind("<FocusOut>", lambda e: self._on_loot_delay_change())
+        loot_min_spin.bind("<Return>", lambda e: self._on_loot_delay_change())
 
         tk.Label(toolbar, text="-", bg=CARD_BG, fg=TEXT_DARK, font=("Segoe UI", 9)).pack(side="left")
 
@@ -483,6 +540,8 @@ class App(tk.Tk):
                                    font=("Segoe UI", 9), bg=LIGHT_BLUE, relief="flat",
                                    command=self._on_loot_delay_change)
         loot_max_spin.pack(side="left", padx=1)
+        loot_max_spin.bind("<FocusOut>", lambda e: self._on_loot_delay_change())
+        loot_max_spin.bind("<Return>", lambda e: self._on_loot_delay_change())
 
         tk.Label(toolbar, text="s", bg=CARD_BG, fg=TEXT_DARK, font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
 
@@ -494,6 +553,8 @@ class App(tk.Tk):
                               bg=LIGHT_BLUE, fg=TEXT_DARK, relief="flat", bd=2)
         lure_entry.pack(side="left", padx=2)
         lure_entry.bind("<FocusIn>", lambda e: self._lure_key_var.set(""))
+        lure_entry.bind("<FocusOut>", lambda e: self._lure_key_var.set(
+            self._vk_to_label(self._lure_key) if self._lure_key else "-"))
         lure_entry.bind("<KeyRelease>", self._on_lure_key_entry)
 
         # Status
@@ -501,9 +562,42 @@ class App(tk.Tk):
         tk.Label(toolbar, textvariable=self._status_var, bg=CARD_BG, fg=TEXT_GREY,
                  font=("Segoe UI", 9)).pack(side="right", padx=6)
 
-        # Log card
-        log_card = tk.Frame(left, bg=CARD_BG, relief="solid", bd=1)
-        log_card.grid(row=1, column=0, sticky="nsew")
+        # Split pane: fish stats (top) + log (bottom)
+        split = tk.PanedWindow(left, orient="vertical", bg=CARD_BG, sashwidth=4, sashrelief="flat")
+        split.grid(row=1, column=0, sticky="nsew")
+
+        # ── Fish stats card ──
+        fish_card = tk.Frame(split, bg=CARD_BG, relief="solid", bd=1)
+        fish_card.columnconfigure(0, weight=1)
+        fish_card.rowconfigure(1, weight=1)
+
+        fish_header = tk.Frame(fish_card, bg=LIGHT_BLUE)
+        fish_header.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self._fish_header_label = tk.Label(fish_header, text="Fish Caught (0)",
+                 bg=LIGHT_BLUE, fg=TEXT_DARK,
+                 font=("Segoe UI", 9, "bold"), padx=6, pady=2)
+        self._fish_header_label.pack(side="left")
+        tk.Button(fish_header, text="Reset", bg=LIGHT_BLUE, fg=TEXT_DARK,
+                  font=("Segoe UI", 7), relief="flat", bd=0, padx=4,
+                  command=self._on_reset_fish).pack(side="right", padx=4)
+
+        self._fish_text = tk.Text(fish_card, bg=BG_WHITE, fg=TEXT_DARK,
+                                  font=("Consolas", 8), state="disabled", wrap="none",
+                                  relief="flat", highlightthickness=0)
+        fish_sb = tk.Scrollbar(fish_card, command=self._fish_text.yview, bg=BG_WHITE)
+        self._fish_text.configure(yscrollcommand=fish_sb.set)
+        fish_sb.grid(row=1, column=1, sticky="ns")
+        self._fish_text.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+
+        # Configure tag for percentage bars
+        self._fish_text.tag_configure("bar", foreground=LIGHT_BLUE)
+        self._fish_text.tag_configure("name", foreground=TEXT_DARK)
+        self._fish_text.tag_configure("count", foreground=TEXT_GREY)
+
+        split.add(fish_card, minsize=60)
+
+        # ── Log card ──
+        log_card = tk.Frame(split, bg=CARD_BG, relief="solid", bd=1)
         log_card.columnconfigure(0, weight=1)
         log_card.rowconfigure(1, weight=1)
 
@@ -519,6 +613,8 @@ class App(tk.Tk):
         self._log_text.configure(yscrollcommand=log_sb.set)
         log_sb.grid(row=1, column=1, sticky="ns")
         self._log_text.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+
+        split.add(log_card, minsize=60)
 
         # ── CENTRE: screenshot ───────────────────────────────────────
         ss_frame = tk.Frame(main, bg="black", relief="solid", bd=1)
@@ -554,10 +650,12 @@ class App(tk.Tk):
         self._chart.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
 
     def _on_ss_resize(self, event):
-        # Keep image centred in canvas
+        # Keep image and loot text centred in canvas
         cx = event.width // 2
         cy = event.height // 2
         self._screenshot_canvas.coords(self._ss_img_id, cx, cy)
+        self._screenshot_canvas.coords(self._loot_id_shadow, cx + 2, 32)
+        self._screenshot_canvas.coords(self._loot_id, cx, 30)
 
     # ------------------------------------------------------------------
     # Logging bridge
@@ -671,6 +769,33 @@ class App(tk.Tk):
         self._screenshot_canvas.itemconfigure(self._loot_id, state="hidden")
 
     # ------------------------------------------------------------------
+    # Fish stats
+    # ------------------------------------------------------------------
+
+    def _update_fish_display(self):
+        stats = self._fish_tracker.get_stats()
+        total = self._fish_tracker.total
+        self._fish_header_label.config(text=f"Fish Caught ({total})")
+
+        self._fish_text.configure(state="normal")
+        self._fish_text.delete("1.0", "end")
+
+        for name, count, pct in stats:
+            # Visual bar: filled blocks proportional to percentage
+            bar_len = int(pct / 5)  # max 20 blocks at 100%
+            bar = "\u2588" * bar_len
+            line = f" {name}"
+            self._fish_text.insert("end", bar, "bar")
+            self._fish_text.insert("end", f" {pct:4.1f}%  ", "count")
+            self._fish_text.insert("end", f"{name}", "name")
+            self._fish_text.insert("end", f"  x{count}\n", "count")
+
+        self._fish_text.configure(state="disabled")
+
+    def _on_reset_fish(self):
+        self._fish_tracker.reset()
+
+    # ------------------------------------------------------------------
     # Screenshot / bitmap event
     # ------------------------------------------------------------------
 
@@ -713,20 +838,26 @@ class App(tk.Tk):
         if vk:
             self._cast_key = vk
             self._cast_key_var.set(self._vk_to_label(vk))
-            self._save_key(CAST_KEY_FILE, vk)
+            self._save_cfg()
             if self._bot:
                 self._bot.set_cast_key(vk)
             self.focus()
 
     def _on_loot_delay_change(self):
-        mn = self._loot_min_var.get()
-        mx = self._loot_max_var.get()
+        try:
+            mn = self._loot_min_var.get()
+            mx = self._loot_max_var.get()
+        except tk.TclError:
+            return
+        mn = max(0.0, min(10.0, mn))
+        mx = max(0.0, min(10.0, mx))
         if mx < mn:
             mx = mn
-            self._loot_max_var.set(mx)
+        self._loot_min_var.set(mn)
+        self._loot_max_var.set(mx)
         self._loot_min = mn
         self._loot_max = mx
-        self._save_loot_settings()
+        self._save_cfg()
         if self._bot:
             self._bot.loot_wait_min = mn
             self._bot.loot_wait_max = mx
@@ -736,7 +867,7 @@ class App(tk.Tk):
         if vk:
             self._lure_key = vk
             self._lure_key_var.set(self._vk_to_label(vk))
-            self._save_key(LURE_KEY_FILE, vk)
+            self._save_cfg()
             if self._bot:
                 self._bot.set_lure_key(vk)
             self.focus()
@@ -755,43 +886,22 @@ class App(tk.Tk):
         fkeys = {0x70 + i: f"F{i+1}" for i in range(12)}
         return fkeys.get(vk, f"0x{vk:02X}")
 
-    def _load_key(self, filename: str, default) -> Optional[int]:
-        try:
-            if os.path.exists(filename):
-                return int(open(filename).read().strip())
-        except Exception:
-            pass
-        return default
-
-    def _save_key(self, filename: str, vk: int):
-        try:
-            with open(filename, "w") as f:
-                f.write(str(vk))
-        except Exception:
-            pass
-
-    def _load_loot_settings(self) -> Tuple[float, float]:
-        try:
-            if os.path.exists(LOOT_SETTINGS_FILE):
-                parts = open(LOOT_SETTINGS_FILE).read().strip().split(",")
-                return float(parts[0]), float(parts[1])
-        except Exception:
-            pass
-        return 0.5, 2.0
-
-    def _save_loot_settings(self):
-        try:
-            with open(LOOT_SETTINGS_FILE, "w") as f:
-                f.write(f"{self._loot_min},{self._loot_max}")
-        except Exception:
-            pass
+    def _save_cfg(self):
+        self._cfg["cast_key"] = self._cast_key
+        self._cfg["lure_key"] = self._lure_key
+        self._cfg["loot_wait_min"] = self._loot_min
+        self._cfg["loot_wait_max"] = self._loot_max
+        self._cfg["colour_mode"] = "Red" if self._pc.mode == ClassifierMode.Red else "Blue"
+        self._cfg["colour_multiplier"] = self._pc.colour_multiplier
+        self._cfg["colour_closeness_multiplier"] = self._pc.colour_closeness_multiplier
+        _save_config(self._cfg)
 
     # ------------------------------------------------------------------
     # Settings
     # ------------------------------------------------------------------
 
     def _on_settings(self):
-        ColourConfigWindow(self, self._pc)
+        ColourConfigWindow(self, self._pc, on_change=self._save_cfg)
 
 
 # ---------------------------------------------------------------------------

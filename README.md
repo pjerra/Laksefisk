@@ -13,6 +13,7 @@ Detects the fishing bobber on screen using pixel colour analysis, watches for th
 - **Human-like mouse movement** — Cubic Bezier curves with random control points, smoothstep easing, and pixel jitter
 - **Lure macro support** — Automatically re-applies lure every 10 min 10 sec
 - **Configurable loot delay** — Random wait before looting (min–max range)
+- **Fish tracker** — Reads WoW's chat log to count and display caught fish with percentages (requires `/chatlog` in WoW)
 - **GUI** — tkinter interface with live screenshot, bobber movement chart, and log panel
 - **Always-on-top** — GUI sits in the top screen strip, outside WoW's capture zone
 - **WoW Classic support** — Adjusted colour thresholds for Classic client
@@ -107,6 +108,7 @@ Full list: [Microsoft Virtual Key Codes](https://learn.microsoft.com/en-us/windo
 ├── fishing_bot.py       # Core bot loop (cast → find → watch → loot)
 ├── bobber_finder.py     # Bobber detection via pixel scanning
 ├── bite_watcher.py      # Bite detection via Y-position tracking
+├── fish_tracker.py      # Chat log parser for fish catch stats
 ├── pixel_classifier.py  # Red/blue pixel colour matching
 ├── wow_screen.py        # Screen capture (mss)
 ├── wow_process.py       # Win32 API (key press, mouse movement)

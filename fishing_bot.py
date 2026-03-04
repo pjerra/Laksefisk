@@ -78,7 +78,7 @@ class LaksefiskBot:
         elapsed = time.time() - self._lure_time
         if elapsed >= LURE_INTERVAL:
             logger.info(f"Applying lure (key {self.lure_key})...")
-            self.fishing_event_handler(FishingEvent(action=FishingAction.Cast))
+            self.fishing_event_handler(FishingEvent(action=FishingAction.Lure))
             wow_process.press_key(self.lure_key)
             logger.info(f"Waiting {LURE_APPLY_TIME}s for lure to apply...")
             time.sleep(LURE_APPLY_TIME)
@@ -120,6 +120,10 @@ class LaksefiskBot:
         time.sleep(delay)
         logger.info(f"Moving mouse to bobber at {bobber_position} and right-clicking.")
         wow_process.right_click_mouse(bobber_position)
+        # Wait for loot to complete before casting again
+        loot_wait = 0.3 + _rng.random() * 0.7
+        logger.info(f"Waiting {loot_wait:.1f}s for loot to complete...")
+        time.sleep(loot_wait)
 
     def _find_bobber(self) -> Tuple[int, int]:
         timer = TimedAction(lambda a: logger.info(f"Waited {a.elapsed_secs}s for target"), 1000, 5)

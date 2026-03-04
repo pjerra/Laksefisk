@@ -39,7 +39,10 @@ def _mouse_event(flags: int, x: int, y: int):
 def _get_wow_hwnd() -> Optional[int]:
     names = {"wow", "wowclassic", "wow-64"}
     for proc in psutil.process_iter(["pid", "name"]):
-        if proc.info["name"].lower().rstrip(".exe") in names or proc.info["name"].lower().replace(".exe", "") in names:
+        pname = proc.info["name"]
+        if not pname:
+            continue
+        if pname.lower().rstrip(".exe") in names or pname.lower().replace(".exe", "") in names:
             hwnds = []
 
             def callback(hwnd, extra):
@@ -56,7 +59,8 @@ def _get_wow_hwnd() -> Optional[int]:
 
 def is_wow_classic() -> bool:
     for proc in psutil.process_iter(["name"]):
-        if "classic" in proc.info["name"].lower():
+        pname = proc.info["name"]
+        if pname and "classic" in pname.lower():
             return True
     return False
 

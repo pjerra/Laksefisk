@@ -9,6 +9,7 @@ class FishingAction(Enum):
     Reset = auto()
     Loot = auto()
     Cast = auto()
+    Lure = auto()
 
 
 @dataclass

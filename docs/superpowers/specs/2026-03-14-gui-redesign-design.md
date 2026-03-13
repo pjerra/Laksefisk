@@ -20,7 +20,7 @@ Replace the current white/light-blue horizontal GUI (1250×230px, fixed top-left
 | `TEXT_PRIMARY` | `#cccccc` | Main text |
 | `TEXT_DIM` | `#555555` | Secondary text, timestamps |
 
-Font: system monospace. All rounded corners (4px border-radius on panels).
+Font: system monospace. Panels use flat edges (tkinter doesn't support border-radius natively; no workaround needed — the dark theme looks clean with sharp corners).
 
 ## Layout Modes
 
@@ -28,7 +28,7 @@ Font: system monospace. All rounded corners (4px border-radius on panels).
 
 Default ~200px wide, resizable. Stacked top to bottom:
 
-1. **Status bar** — Play/stop button (circle, teal=idle, red pulse=running) + "Idle"/"Running" text + addon dot (teal=connected, grey=disconnected) + Cal button + gear icon
+1. **Status bar** — Single toggle button: teal circle with ▶ when idle, solid red circle with ■ when running (static colour, no animation). Click toggles start/stop. + "Idle"/"Running" text + addon dot (teal=connected, grey=disconnected) + Cal button + gear icon
 2. **Bobber view** — Zoomed crop of the watched/scan area centred on bobber. Amplitude chart overlaid at bottom with gradient fade, max 20 seconds of data. Semi-transparent bars.
 3. **Fish list** — Header "Fish Caught (N)" with reset button. At least 4 items visible without scrolling. Each row: coloured bar + name + count. Resizable panel height.
 4. **Log** — Collapsible (chevron toggle). Timestamped entries, newest on top. Colour-coded: teal for loot, red for warnings. Resizable panel height.
@@ -71,18 +71,18 @@ Snap threshold: 20px.
 ## Components
 
 ### Status Bar
-- **Play button:** 20px circle. Teal background + play icon when idle. Click → start bot. While running: red background + stop icon, click → stop.
-- **Status text:** "Idle" (teal) / "Running" (teal, or pulsing) / "Paused" (yellow)
+- **Play/stop toggle:** Single 20px canvas-drawn circle. Idle: teal background + ▶ icon. Running: red background + ■ icon. Click toggles between start/stop. Static colours, no animation.
+- **Status text:** "Idle" (teal) / "Running" (teal) / "Paused" (yellow)
 - **Addon dot:** Small circle, teal when pixel bridge connected, grey when not. Tooltip: "Addon: Connected" / "Addon: Not found"
-- **Cal button:** Small button "Cal" with `PANEL_DEEP` background. Click → run sweep calibration. Tooltip shows current values.
+- **Cal button:** Small button "Cal" with `PANEL_DEEP` background. Click → run `sweep_calibrate()` in a thread (same as current toolbar Calibrate button). Tooltip shows current mult/closeness values. The "Auto-calibrate" checkbox in settings controls whether calibration runs automatically on first cast.
 - **Gear icon:** Opens settings popup (toplevel window)
 
 ### Bobber View
 - Shows only the `WowScreen` capture region, cropped and zoomed to centre around detected bobber position
-- When no bobber found: show full scan area (current behaviour)
-- When bobber found: zoom to ~3x around bobber position, smoothly tracking
-- Reticle overlay on bobber position (existing `draw_reticle`)
-- **Amplitude overlay:** Bottom 20% of bobber view. Gradient from transparent to semi-opaque black. Bar chart drawn on top. Each bar = one amplitude sample. Max 20 seconds shown. Spike bar uses `ALERT` colour, normal bars use `PANEL_DEEP` at 60% opacity.
+- **Zoom logic:** Crop happens on the raw PIL bitmap before display. When bobber is found, calculate a crop rectangle (~3x zoom) centred on `event.point` in bitmap coordinates. Clamp to bitmap bounds. Resize the crop to fill the canvas. When no bobber found: show full scan area (current behaviour). No interpolation/smoothing — hard snap to new position each frame.
+- Reticle overlay on bobber position (existing `draw_reticle`, applied after crop)
+- **Amplitude overlay:** Bottom 20% of bobber view canvas. Gradient from transparent to semi-opaque black (`BG_DARK` at 80% opacity). Vertical bars drawn on canvas. Each bar = one amplitude sample. Y-axis range: -15 to 10 (same as current `BobberChart`). Strike threshold line at -7 (dashed). Max 20 seconds shown (vs current 25s). Spike bar (exceeds strike) uses `ALERT` colour, normal bars use `PANEL_DEEP` at 60% opacity. Data still collected via existing `BobberChart.add()` logic, just rendered differently.
+- **FlyingFishOverlay:** Attaches to the bobber view canvas (same canvas as amplitude overlay). Z-order: bobber image → amplitude bars → flying fish on top.
 
 ### Fish List
 - Header row: "Fish Caught (N)" in `ACCENT` + reset icon (↻)
@@ -104,14 +104,15 @@ Toplevel window opened via gear icon. Dark themed to match. Contains:
 
 - **Cast key** — key selector (current hex input)
 - **Lure key** — key selector + None option
-- **Loot wait** — min/max sliders (0.1–5.0s)
+- **Loot wait** — min/max sliders (0.0–10.0s, matching current range)
 - **Colour mode** — Red/Blue radio buttons
 - **Colour multiplier** — slider (0–3.0)
 - **Colour closeness** — slider (0–5.0)
 - **Auto-calibrate** — checkbox
-- **Stop on player nearby** — checkbox
-- **Stop on bags full** — checkbox
+- **Stop on player nearby** — checkbox (moved from toolbar; popup-only, not on status bar)
+- **Stop on bags full** — checkbox (moved from toolbar; popup-only, not on status bar)
 - **Dock position** — dropdown (Left / Top / Right / Floating)
+- **Always on top** — checkbox (default: on)
 - **Reset to defaults** button
 
 The existing `ColourConfigWindow` content (capture preview, colour map) moves into a tab or expandable section within this unified settings popup.
@@ -126,24 +127,30 @@ All new settings saved to `config.json`:
   "window_width": 200,
   "window_height": 500,
   "horizontal_height": 110,
-  "sash_positions": [120, 280],
+  "vertical_sash_positions": [120, 280],
+  "horizontal_sash_positions": [130, 350],
   "log_collapsed": false,
-  "bobber_zoom": 3.0
+  "bobber_zoom": 3.0,
+  "always_on_top": true
 }
 ```
 
 Merged with existing config keys (cast_key, lure_key, etc.).
 
+**Save triggers:** Config is written on window close (`WM_DELETE_WINDOW`), dock position change, and log collapse toggle. NOT on every resize/sash drag (too frequent). Sash positions and window size are captured at save time from current widget state.
+
 ## Migration from Current GUI
 
 ### What stays
 - `BobberChart` logic (data collection, amplitude tracking) — repurposed as overlay renderer
-- `FlyingFishOverlay` — keep the celebration animation
+- `FlyingFishOverlay` — keep the celebration animation, attach to bobber view canvas
 - `ColourConfigWindow` content — moved into settings popup
 - `FishTracker` integration — same data, new rendering
 - `PixelBridge` / addon status detection
 - Bot thread management, queue-based logging
 - `draw_reticle` function
+- **mss DPI warm-up:** The `with mss.mss(): pass` call at the top of `App.__init__` MUST be preserved before any tkinter geometry calls (mss changes Windows DPI awareness on first use, corrupting geometry if called later)
+- **Always-on-top:** Retained by default (`-topmost` attribute), with new `always_on_top` config key to make it toggleable in settings
 
 ### What changes
 - `App` class rewritten with new layout system

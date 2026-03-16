@@ -53,6 +53,7 @@ class LaksefiskBot:
         self.container_key: Optional[int] = None
         self.auto_open_containers: bool = False
         self._junk_delete_count: int = 0
+        self._dc_count: int = 0
         self._pixel_classifier = None  # set by GUI for auto-calibration
         self._calibrated: bool = False  # sweep once at start
         logger.info("Laksefisk Created.")
@@ -139,11 +140,32 @@ class LaksefiskBot:
         logger.warning("Junk delete timed out — F12 may not have triggered")
 
     def _check_stop_conditions(self) -> bool:
-        """Check pixel bridge for stop conditions. Returns True if paused."""
+        """Check pixel bridge for stop conditions. Returns True if paused/stopped."""
         try:
             data = self._read_bridge()
+
+            # Disconnect detection: bridge was connected but now returns None
             if data is None:
+                if self.pixel_bridge and self.pixel_bridge.connected is False:
+                    self._dc_count += 1
+                    if self._dc_count >= 5:
+                        logger.error("Disconnected — stopping bot")
+                        self.stop()
+                        return True
                 return False
+            self._dc_count = 0
+
+            # Dead / ghost — stop immediately
+            if not data.alive:
+                logger.error("Character died — stopping bot")
+                self.stop()
+                return True
+
+            # Combat — stop immediately, don't do anything
+            if data.combat:
+                logger.warning("In combat — stopping bot")
+                self.stop()
+                return True
 
             if self.stop_on_player_nearby and data.player_nearby:
                 logger.warning("Player nearby — pausing fishing")

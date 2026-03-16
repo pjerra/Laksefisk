@@ -187,7 +187,7 @@ class PixelBridge:
             self._screen_h = mon["height"]
 
         # Load item lookup
-        lookup_path = os.path.join(os.path.dirname(__file__), "data", "item_lookup.json")
+        lookup_path = os.path.join(os.path.dirname(__file__), "item_lookup.json")
         if os.path.exists(lookup_path):
             try:
                 with open(lookup_path, "r", encoding="utf-8") as f:

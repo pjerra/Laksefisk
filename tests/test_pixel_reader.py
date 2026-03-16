@@ -44,7 +44,7 @@ SCAN_HEIGHT = 250
 
 # Item lookup table
 ITEM_LOOKUP = {}
-_lookup_path = os.path.join(os.path.dirname(__file__), "..", "data", "item_lookup.json")
+_lookup_path = os.path.join(os.path.dirname(__file__), "..", "item_lookup.json")
 if os.path.exists(_lookup_path):
     with open(_lookup_path, "r", encoding="utf-8") as f:
         ITEM_LOOKUP = json.load(f)

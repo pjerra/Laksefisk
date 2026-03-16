@@ -183,6 +183,7 @@ Full list: [Microsoft Virtual Key Codes](https://learn.microsoft.com/en-us/windo
 ├── pixel_classifier.py     # Red/blue pixel colour matching
 ├── bobber_calibration.py   # Auto-tune bobber colour thresholds
 ├── loot_report.py          # Generate interactive HTML loot report
+├── item_lookup.json        # Item ID → name mapping for pixel bridge
 ├── wow_screen.py           # Screen capture (mss)
 ├── wow_process.py          # Win32 API (key press, mouse movement)
 ├── models.py               # Data classes and enums

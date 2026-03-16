@@ -1102,14 +1102,13 @@ class App(tk.Tk):
         if now - self._last_ss_time < 0.1:  # ~10 fps cap
             return
         self._last_ss_time = now
-        img = event.bitmap.copy()
-        point = event.point
-        self.after(0, lambda: self._update_screenshot(img, point))
 
-    def _update_screenshot(self, img: Image.Image, point: Tuple[int, int]):
+        bmp = event.bitmap
+        point = event.point
+
+        # Crop in bot thread — copy only the small zoomed region, not the full bitmap
         if point != (0, 0):
-            # Zoom: crop around bobber position before display
-            iw, ih = img.size
+            iw, ih = bmp.size
             zoom = self._cfg.get("bobber_zoom", 3.0)
             crop_w = int(iw / zoom)
             crop_h = int(ih / zoom)
@@ -1120,12 +1119,16 @@ class App(tk.Tk):
             y2 = min(ih, y1 + crop_h)
             x1 = max(0, x2 - crop_w)
             y1 = max(0, y2 - crop_h)
-            img = img.crop((x1, y1, x2, y2))
-            reticle_x = cx - x1
-            reticle_y = cy - y1
-            img = draw_reticle(img, (reticle_x, reticle_y))
+            img = bmp.crop((x1, y1, x2, y2))
+            reticle_pt = (cx - x1, cy - y1)
         else:
-            img = draw_reticle(img, point)
+            img = bmp.copy()
+            reticle_pt = point
+
+        self.after(0, lambda: self._update_screenshot(img, reticle_pt))
+
+    def _update_screenshot(self, img: Image.Image, reticle_pt: Tuple[int, int]):
+        draw_reticle(img, reticle_pt)
 
         cw = self._screenshot_canvas.winfo_width() or 500
         ch = self._screenshot_canvas.winfo_height() or 200

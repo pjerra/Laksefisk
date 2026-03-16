@@ -194,8 +194,13 @@ class LaksefiskBot:
             if current_pos == EMPTY or current_pos[0] == 0:
                 return
 
-            if self.bite_watcher.is_bite(current_pos):
-                self._loot(current_pos)
+            # Use raw Y for bite detection (unsmoothed — preserves dip amplitude)
+            raw_pos = getattr(self.bobber_finder, 'last_raw_screen_position', current_pos)
+            if raw_pos == EMPTY:
+                raw_pos = current_pos
+
+            if self.bite_watcher.is_bite(raw_pos):
+                self._loot(current_pos)  # loot uses smoothed position
                 return
 
             # Periodically check for junk from previous loot (addon may be slow)

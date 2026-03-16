@@ -10,8 +10,10 @@ from pixel_classifier import ClassifierMode, PixelClassifier
 from wow_screen import WowScreen
 
 EMPTY = (0, 0)
-SMOOTH_ALPHA = 0.4    # EMA factor — higher = more responsive, lower = smoother
+SMOOTH_ALPHA = 0.6    # EMA factor — higher = more responsive, lower = smoother
 MAX_JUMP = 30         # pixels — ignore detections further than this from smoothed position
+WARMUP_FRAMES = 4     # frames to collect before locking X
+LOCKED_SEARCH = 15    # pixels — tighter search window once locked
 logger = logging.getLogger("Laksefisk")
 
 
@@ -37,11 +39,17 @@ class SearchBobberFinder(IBobberFinder):
         self.bitmap_callbacks: List[Callable[[BobberBitmapEvent], None]] = []
         self._locked_x: Optional[int] = None
         self._smooth_y: Optional[float] = None
+        self._warmup_xs: List[int] = []
+        self._warmup_ys: List[int] = []
+        self._raw_y: Optional[int] = None
 
     def reset(self):
         self._previous_location = EMPTY
         self._locked_x = None
         self._smooth_y = None
+        self._warmup_xs.clear()
+        self._warmup_ys.clear()
+        self._raw_y = None
 
     def find(self) -> Tuple[int, int]:
         self._bitmap = WowScreen.get_bitmap()
@@ -57,8 +65,10 @@ class SearchBobberFinder(IBobberFinder):
             best = self._stabilize(best)
             self._previous_location = best
 
+        raw_pt = (self._previous_location[0], self._raw_y) if self._raw_y is not None else self._previous_location
         event = BobberBitmapEvent(
             point=(self._previous_location[0], self._previous_location[1]),
+            raw_point=raw_pt,
             bitmap=self._bitmap,
         )
         for cb in self.bitmap_callbacks:
@@ -71,19 +81,36 @@ class SearchBobberFinder(IBobberFinder):
             return EMPTY
         return WowScreen.get_screen_position_from_bitmap_position(self._previous_location)
 
+    @property
+    def last_raw_screen_position(self) -> Tuple[int, int]:
+        """Raw (unsmoothed) screen position from last find() — for bite detection."""
+        if self._raw_y is None or self._previous_location == EMPTY:
+            return EMPTY
+        raw_bitmap = (self._previous_location[0], self._raw_y)
+        return WowScreen.get_screen_position_from_bitmap_position(raw_bitmap)
+
     def _stabilize(self, raw: Tuple[int, int]) -> Tuple[int, int]:
         rx, ry = raw
-        if self._locked_x is None:
-            # First detection — lock X and init smooth Y
-            self._locked_x = rx
-            self._smooth_y = float(ry)
-            return (self._locked_x, ry)
+        self._raw_y = ry
 
-        # Check if raw Y is within dead zone of smoothed position
+        # Still in warm-up phase — collect frames before locking
+        if self._locked_x is None:
+            self._warmup_xs.append(rx)
+            self._warmup_ys.append(ry)
+            if len(self._warmup_xs) < WARMUP_FRAMES:
+                return raw
+            # Warm-up complete — lock X to median, init smooth Y
+            sorted_xs = sorted(self._warmup_xs)
+            self._locked_x = sorted_xs[len(sorted_xs) // 2]
+            self._smooth_y = float(sorted(self._warmup_ys)[len(self._warmup_ys) // 2])
+            return (self._locked_x, round(self._smooth_y))
+
+        # Check if detection jumped too far — likely noise
         if abs(ry - self._smooth_y) > MAX_JUMP:
-            # Detection too far away — treat as lost, reset stabilization
             self._locked_x = None
             self._smooth_y = None
+            self._warmup_xs.clear()
+            self._warmup_ys.clear()
             return raw
 
         # Apply EMA to Y, keep X locked
@@ -96,10 +123,14 @@ class SearchBobberFinder(IBobberFinder):
         has_prev = self._previous_location != EMPTY
 
         w, h = bmp.size
-        min_x = max(self._previous_location[0] - 40 if has_prev else 0, 0)
-        max_x = min(self._previous_location[0] + 40 if has_prev else w, w)
-        min_y = max(self._previous_location[1] - 40 if has_prev else 0, 0)
-        max_y = min(self._previous_location[1] + 40 if has_prev else h, h)
+        if has_prev and self._locked_x is not None:
+            radius = LOCKED_SEARCH
+        else:
+            radius = 40
+        min_x = max(self._previous_location[0] - radius if has_prev else 0, 0)
+        max_x = min(self._previous_location[0] + radius if has_prev else w, w)
+        min_y = max(self._previous_location[1] - radius if has_prev else 0, 0)
+        max_y = min(self._previous_location[1] + radius if has_prev else h, h)
 
         t0 = time.perf_counter()
 

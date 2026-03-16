@@ -26,4 +26,5 @@ class FishingEvent:
 @dataclass
 class BobberBitmapEvent:
     point: Tuple[int, int] = (0, 0)
+    raw_point: Tuple[int, int] = (0, 0)
     bitmap: Optional[Image.Image] = None

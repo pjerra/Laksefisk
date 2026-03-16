@@ -12,7 +12,6 @@ build/
 *.spec
 backup/
 backup_*/
-data/
 loot.json
 loot.html
 pixel_region.json

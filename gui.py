@@ -861,6 +861,7 @@ class App(tk.Tk):
 
         self._log_queue: queue.Queue = queue.Queue()
         self._screenshot_photo: Optional[ImageTk.PhotoImage] = None
+        self._last_ss_time: float = 0.0
         self._is_running = False
 
         # Fish tracker (pixel bridge mode)
@@ -1098,6 +1099,10 @@ class App(tk.Tk):
     def _on_bitmap_event(self, event: BobberBitmapEvent):
         if event.bitmap is None:
             return
+        now = time.perf_counter()
+        if now - self._last_ss_time < 0.066:  # ~15 fps cap
+            return
+        self._last_ss_time = now
         img = event.bitmap.copy()
         point = event.point
         self.after(0, lambda: self._update_screenshot(img, point))

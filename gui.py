@@ -1367,7 +1367,7 @@ class App(tk.Tk):
             self._prev_bags_full = data.bags_full
             self._prev_whisper_flag = data.whisper_flag
 
-        self.after(2000, self._check_addon_status)
+        self.after(self._pixel_bridge.poll_interval_ms, self._check_addon_status)
 
     # ------------------------------------------------------------------
     # Key helpers

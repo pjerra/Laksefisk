@@ -98,11 +98,17 @@ class LaksefiskBot:
     def set_lure_key(self, key: Optional[int]):
         self.lure_key = key
 
+    def _read_bridge(self) -> "Optional[PixelBridgeData]":
+        """Read pixel bridge, skipping slow scan if addon not found."""
+        if not self.pixel_bridge:
+            return None
+        return self.pixel_bridge.read(allow_slow_scan=False)
+
     def _try_open_container(self):
         """Press container key if a container was just looted."""
         if not self.auto_open_containers or not self.container_key or not self.pixel_bridge:
             return
-        data = self.pixel_bridge.read()
+        data = self._read_bridge()
         if data and data.container_looted:
             logger.info("Container looted — pressing key to open")
             time.sleep(0.5)
@@ -113,7 +119,7 @@ class LaksefiskBot:
         """Press F12 to confirm the destroy popup shown by the addon."""
         if not self.auto_delete_junk or not self.pixel_bridge:
             return
-        data = self.pixel_bridge.read()
+        data = self._read_bridge()
         if data is None or not data.junk_on_cursor:
             return
         logger.info("Junk on cursor — pressing F12 to confirm delete")
@@ -125,7 +131,7 @@ class LaksefiskBot:
         t0 = time.time()
         while time.time() - t0 < 3.0:
             time.sleep(0.2)
-            data = self.pixel_bridge.read()
+            data = self._read_bridge()
             if data is None or not data.junk_on_cursor:
                 self._junk_delete_count += 1
                 logger.info(f"Junk deleted (total: {self._junk_delete_count})")
@@ -135,7 +141,7 @@ class LaksefiskBot:
     def _check_stop_conditions(self) -> bool:
         """Check pixel bridge for stop conditions. Returns True if paused."""
         try:
-            data = self.pixel_bridge.read()
+            data = self._read_bridge()
             if data is None:
                 return False
 
@@ -144,7 +150,7 @@ class LaksefiskBot:
                 self.fishing_event_handler(FishingEvent(action=FishingAction.Cast))
                 while self._is_enabled:
                     time.sleep(3)
-                    data = self.pixel_bridge.read()
+                    data = self._read_bridge()
                     if data is None or not data.player_nearby:
                         logger.info("Player gone — resuming fishing")
                         return True
@@ -232,7 +238,7 @@ class LaksefiskBot:
         if self.auto_delete_junk and self.pixel_bridge:
             t0 = time.time()
             while time.time() - t0 < 1.5:
-                data = self.pixel_bridge.read()
+                data = self._read_bridge()
                 if data is not None and data.junk_on_cursor:
                     self._try_delete_junk()
                     break
@@ -241,7 +247,7 @@ class LaksefiskBot:
     def _read_loot_from_bridge(self):
         """Read loot info from pixel bridge instead of OCR."""
         try:
-            data = self.pixel_bridge.read()
+            data = self._read_bridge()
             if data is None:
                 logger.warning("Pixel bridge: bar not found")
                 return

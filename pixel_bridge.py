@@ -179,6 +179,7 @@ class PixelBridge:
         self._screen_h: int = 0
         self._last_data: Optional[PixelBridgeData] = None
         self._connected: bool = False
+        self._consecutive_failures: int = 0
 
         # Load screen dimensions
         with mss.mss() as sct:
@@ -206,6 +207,15 @@ class PixelBridge:
         """Last successfully read data."""
         return self._last_data
 
+    @property
+    def poll_interval_ms(self) -> int:
+        """Recommended poll interval based on consecutive failures (backoff)."""
+        if self._consecutive_failures < 5:
+            return 2000
+        if self._consecutive_failures < 15:
+            return 10000
+        return 30000
+
     def lookup_item(self, item_id: int) -> str:
         """Look up item name from ID."""
         if item_id == 0:
@@ -230,12 +240,18 @@ class PixelBridge:
         self._cached_region = None
         self._cache_miss = 0
 
-    def read(self) -> Optional[PixelBridgeData]:
+    def read(self, allow_slow_scan: bool = True) -> Optional[PixelBridgeData]:
         """Read all pixel bridge data from the screen.
         Returns PixelBridgeData on success, None if pixel bar not found.
+        If allow_slow_scan is False, skip the expensive full-screen scan
+        when the cached region is lost (used by bot loop to avoid lag).
         """
         img = None
         result = None
+
+        # In backoff and no cache — skip expensive scan unless allowed
+        if not allow_slow_scan and not self._cached_region and self._consecutive_failures >= 5:
+            return None
 
         # Fast path: try cached region first
         if self._cached_region:
@@ -272,10 +288,12 @@ class PixelBridge:
 
         if result is None:
             self._connected = False
+            self._consecutive_failures += 1
             return None
 
         bar_x, bar_y, px_size, px_step = result
         self._connected = True
+        self._consecutive_failures = 0
 
         def rp(idx):
             return _read_pixel(img, bar_x, bar_y, idx, px_size, px_step)

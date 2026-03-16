@@ -100,7 +100,6 @@ def _save_config(cfg: dict):
 # ---------------------------------------------------------------------------
 
 def draw_reticle(img: Image.Image, point: Tuple[int, int]) -> Image.Image:
-    img = img.copy()
     draw = ImageDraw.Draw(img)
     x, y = point
     if x <= 0 and y <= 0:
@@ -1100,7 +1099,7 @@ class App(tk.Tk):
         if event.bitmap is None:
             return
         now = time.perf_counter()
-        if now - self._last_ss_time < 0.066:  # ~15 fps cap
+        if now - self._last_ss_time < 0.1:  # ~10 fps cap
             return
         self._last_ss_time = now
         img = event.bitmap.copy()
@@ -1137,7 +1136,7 @@ class App(tk.Tk):
         scale = min(cw / iw, ch / ih)
         new_w = max(1, int(iw * scale))
         new_h = max(1, int(ih * scale))
-        img = img.resize((new_w, new_h), Image.LANCZOS)
+        img = img.resize((new_w, new_h), Image.NEAREST)
         self._screenshot_photo = ImageTk.PhotoImage(img)
         self._screenshot_canvas.coords(self._ss_img_id, cw // 2, ch // 2)
         self._screenshot_canvas.itemconfig(self._ss_img_id, image=self._screenshot_photo)

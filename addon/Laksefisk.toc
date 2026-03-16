@@ -1,0 +1,8 @@
+## Interface: 11508
+## Title: Laksefisk
+## Notes: Pixel bridge for Laksefisk fishing bot. Encodes game events as coloured pixels.
+## Author: pjerra
+## Version: 1.0
+## SavedVariables: LaksefiskDB
+
+Laksefisk.lua

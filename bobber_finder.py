@@ -10,6 +10,8 @@ from pixel_classifier import ClassifierMode, PixelClassifier
 from wow_screen import WowScreen
 
 EMPTY = (0, 0)
+SMOOTH_ALPHA = 0.4    # EMA factor — higher = more responsive, lower = smoother
+MAX_JUMP = 30         # pixels — ignore detections further than this from smoothed position
 logger = logging.getLogger("Laksefisk")
 
 
@@ -33,9 +35,13 @@ class SearchBobberFinder(IBobberFinder):
         self._previous_location: Tuple[int, int] = EMPTY
         self._bitmap: Optional[Image.Image] = None
         self.bitmap_callbacks: List[Callable[[BobberBitmapEvent], None]] = []
+        self._locked_x: Optional[int] = None
+        self._smooth_y: Optional[float] = None
 
     def reset(self):
         self._previous_location = EMPTY
+        self._locked_x = None
+        self._smooth_y = None
 
     def find(self) -> Tuple[int, int]:
         self._bitmap = WowScreen.get_bitmap()
@@ -48,6 +54,7 @@ class SearchBobberFinder(IBobberFinder):
 
         self._previous_location = EMPTY
         if best is not None:
+            best = self._stabilize(best)
             self._previous_location = best
 
         event = BobberBitmapEvent(
@@ -63,6 +70,25 @@ class SearchBobberFinder(IBobberFinder):
         if self._previous_location == EMPTY:
             return EMPTY
         return WowScreen.get_screen_position_from_bitmap_position(self._previous_location)
+
+    def _stabilize(self, raw: Tuple[int, int]) -> Tuple[int, int]:
+        rx, ry = raw
+        if self._locked_x is None:
+            # First detection — lock X and init smooth Y
+            self._locked_x = rx
+            self._smooth_y = float(ry)
+            return (self._locked_x, ry)
+
+        # Check if raw Y is within dead zone of smoothed position
+        if abs(ry - self._smooth_y) > MAX_JUMP:
+            # Detection too far away — treat as lost, reset stabilization
+            self._locked_x = None
+            self._smooth_y = None
+            return raw
+
+        # Apply EMA to Y, keep X locked
+        self._smooth_y = SMOOTH_ALPHA * ry + (1 - SMOOTH_ALPHA) * self._smooth_y
+        return (self._locked_x, round(self._smooth_y))
 
     def _find_red_points(self) -> List[Tuple[int, int]]:
         points: List[Tuple[int, int]] = []

@@ -26,6 +26,8 @@ LOOT_DELAY = 2000  # ms
 _last_key: int = 0
 _rng = random.Random()
 
+MOUSEEVENTF_LEFTDOWN = 0x00000002
+MOUSEEVENTF_LEFTUP = 0x00000004
 MOUSEEVENTF_RIGHTDOWN = 0x00000008
 MOUSEEVENTF_RIGHTUP = 0x00000010
 
@@ -136,6 +138,15 @@ def _human_move_mouse(start: Tuple[int, int], end: Tuple[int, int]):
 
     # Ensure we land exactly on target
     win32api.SetCursorPos((int(ex), int(ey)))
+
+
+def left_click_at(position: Tuple[int, int]):
+    """Left-click at position to trigger delete popup."""
+    win32api.SetCursorPos(position)
+    time.sleep(0.05 + _rng.uniform(0, 0.05))
+    _mouse_event(MOUSEEVENTF_LEFTDOWN, position[0], position[1])
+    time.sleep((30 + _rng.randint(0, 47)) / 1000)
+    _mouse_event(MOUSEEVENTF_LEFTUP, position[0], position[1])
 
 
 def right_click_mouse(position: Tuple[int, int]):

@@ -1,69 +1,56 @@
 """
-Monitors WoW's chat log for loot messages and tracks fish catches.
+Fish loot tracker — pixel bridge mode only.
 
-Requires /chatlog to be enabled in WoW.
-Parses lines like:
-  "You receive loot: [Raw Brilliant Smallfish]x2."
-  "You receive loot: [Longjaw Mud Snapper]."
+Records loot events from the WoW Laksefisk addon via the pixel bridge.
+Persists session and all-time totals to a JSON file.
 """
 
-import glob
+import json
 import logging
 import os
-import re
 import threading
-import time
+import unicodedata
 from collections import Counter
-from typing import Callable, List, Optional
+from datetime import datetime
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger("Laksefisk")
 
-# Matches loot lines in WoW chat log.
-# Format: "You receive loot: Item Name."  or  "You receive loot: [Item Name]x2."
-# Classic Anniversary uses no brackets: "You receive loot: Raw Longjaw Mud Snapper."
-_LOOT_RE = re.compile(r"You receive loot: \[?(.+?)\]?(?:x(\d+))?\.")
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_key(name: str) -> str:
+    """Key for grouping: lowercase, no apostrophes, no accents."""
+    normalized = "".join(
+        c if unicodedata.category(c) != "Mn" else ""
+        for c in unicodedata.normalize("NFD", name)
+    )
+    return normalized.replace("'", "").replace("\u2019", "").lower()
 
 
-def find_wow_log_path() -> Optional[str]:
-    """Search common WoW install locations for the chat log directory."""
-    candidates = []
-    for drive in ["C", "D", "E", "F"]:
-        base = f"{drive}:/Program Files (x86)/World of Warcraft"
-        if not os.path.isdir(base):
-            base = f"{drive}:/Program Files/World of Warcraft"
-        if not os.path.isdir(base):
-            continue
-        for variant in ["_anniversary_", "_classic_era_", "_classic_", "_retail_"]:
-            logs_dir = os.path.join(base, variant, "Logs")
-            if os.path.isdir(logs_dir):
-                candidates.append(logs_dir)
-            elif os.path.isdir(os.path.join(base, variant)):
-                candidates.append(os.path.join(base, variant, "Logs"))
-
-    # Return the first one that has a chat log, or the first candidate
-    for c in candidates:
-        log_file = os.path.join(c, "WoWChatLog.txt")
-        if os.path.isfile(log_file):
-            return log_file
-
-    # Return first candidate path even if log doesn't exist yet
-    if candidates:
-        return os.path.join(candidates[0], "WoWChatLog.txt")
-    return None
-
+# ---------------------------------------------------------------------------
+# FishTracker
+# ---------------------------------------------------------------------------
 
 class FishTracker:
-    """Tails WoW's chat log and counts looted items."""
+    """Pixel-bridge fish tracker.
 
-    def __init__(self, log_path: Optional[str] = None):
-        self.log_path = log_path or find_wow_log_path()
+    Records loot events from the addon pixel bridge.  Persists session
+    and all-time totals to a JSON file.
+    """
+
+    def __init__(self, loot_file: Optional[str] = None):
         self._counts: Counter = Counter()
+        self._names: Dict[str, str] = {}  # key -> best display name
         self._total: int = 0
+
         self._lock = threading.Lock()
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
         self._on_update: Optional[Callable[[], None]] = None
-        self._file_pos: int = 0
+
+        self.loot_file: Optional[str] = loot_file
+        self._session_start: str = datetime.now().isoformat(timespec="seconds")
 
     @property
     def total(self) -> int:
@@ -71,10 +58,13 @@ class FishTracker:
             return self._total
 
     def get_stats(self) -> List[tuple]:
-        """Returns list of (name, count, percentage) sorted by count descending."""
+        """Returns list of (name, count, percentage) sorted by count desc."""
         with self._lock:
             total = self._total
-            items = list(self._counts.items())
+            items = [
+                (self._names.get(k, k), c)
+                for k, c in self._counts.items()
+            ]
         if total == 0:
             return []
         items.sort(key=lambda x: x[1], reverse=True)
@@ -83,70 +73,131 @@ class FishTracker:
     def set_on_update(self, callback: Callable[[], None]):
         self._on_update = callback
 
-    def start(self):
-        if self._running:
-            return
-        if not self.log_path:
-            logger.warning("No WoW chat log path found. Enable /chatlog in WoW.")
-            return
-        self._running = True
-        # Start reading from end of file (only new loot)
-        if os.path.isfile(self.log_path):
-            self._file_pos = os.path.getsize(self.log_path)
-        else:
-            self._file_pos = 0
-        self._thread = threading.Thread(target=self._tail_loop, daemon=True)
-        self._thread.start()
-        logger.info(f"Fish tracker watching: {self.log_path}")
-
-    def stop(self):
-        self._running = False
-
     def reset(self):
         with self._lock:
             self._counts.clear()
+            self._names.clear()
             self._total = 0
         if self._on_update:
             self._on_update()
 
-    def _tail_loop(self):
-        while self._running:
-            try:
-                if not os.path.isfile(self.log_path):
-                    time.sleep(2)
-                    continue
+    # -- Pixel bridge (called by bot after each loot) -----------------------
 
-                # Always try to read — WoW buffers writes so getsize() may
-                # not reflect new data yet.  Open with sharing so WoW can
-                # keep writing.
-                with open(self.log_path, "r", encoding="utf-8", errors="ignore") as f:
-                    f.seek(self._file_pos)
-                    new_data = f.read()
-                    new_pos = f.tell()
+    def record_pixel_loot(self, name: str, item_id: int = 0):
+        """Record a loot event from the pixel bridge (exact item name)."""
+        if not name:
+            return
+        key = _normalize_key(name)
+        with self._lock:
+            self._counts[key] += 1
+            self._total += 1
+            self._names[key] = name  # pixel bridge gives exact names
+        logger.info(f"Pixel Looted: [{name}] (ID: {item_id})")
+        self.save_loot()
+        if self._on_update:
+            self._on_update()
 
-                if new_pos < self._file_pos:
-                    # File was truncated/rotated — re-read from start
-                    self._file_pos = 0
-                    continue
+    # -- Persistence ---------------------------------------------------------
 
-                if new_data:
-                    self._file_pos = new_pos
-                    found = False
-                    for line in new_data.splitlines():
-                        m = _LOOT_RE.search(line)
-                        if m:
-                            item_name = m.group(1)
-                            qty = int(m.group(2)) if m.group(2) else 1
-                            with self._lock:
-                                self._counts[item_name] += qty
-                                self._total += qty
-                            found = True
-                            logger.info(f"Looted: {item_name} x{qty}")
+    def _items_with_pct(self, counts: Counter, total: int) -> List[Dict]:
+        """Build items list with count and percentage."""
+        items = []
+        for name, count in counts.most_common():
+            pct = round(count / total * 100, 1) if total else 0
+            items.append({"name": name, "count": count, "pct": pct})
+        return items
 
-                    if found and self._on_update:
-                        self._on_update()
+    def save_loot(self):
+        """Save current session + all-time totals to JSON file.
 
-            except Exception as e:
-                logger.debug(f"Fish tracker error: {e}")
+        File structure:
+          all_time:   {total, items[{name, count, pct}]}
+          sessions:   [{start, end, total, items[{name, count, pct}]}]
+        """
+        if not self.loot_file:
+            return
 
-            time.sleep(0.5)
+        # Load existing data to merge sessions
+        existing = self._load_raw()
+        prev_sessions = existing.get("sessions", [])
+
+        # Build current session data
+        with self._lock:
+            sess_total = self._total
+            sess_counts = Counter({
+                self._names.get(k, k): c
+                for k, c in self._counts.items()
+            })
+
+        if sess_total == 0:
+            return
+
+        now = datetime.now().isoformat(timespec="seconds")
+        current_session = {
+            "start": self._session_start,
+            "end": now,
+            "total": sess_total,
+            "items": self._items_with_pct(sess_counts, sess_total),
+        }
+
+        # Update or append current session
+        updated = False
+        for i, s in enumerate(prev_sessions):
+            if s.get("start") == self._session_start:
+                prev_sessions[i] = current_session
+                updated = True
+                break
+        if not updated:
+            prev_sessions.append(current_session)
+
+        # Build all-time totals from all sessions
+        all_time_counts: Counter = Counter()
+        for s in prev_sessions:
+            for item in s["items"]:
+                all_time_counts[item["name"]] += item["count"]
+        all_time_total = sum(all_time_counts.values())
+
+        data = {
+            "all_time": {
+                "total": all_time_total,
+                "items": self._items_with_pct(all_time_counts, all_time_total),
+            },
+            "sessions": prev_sessions,
+        }
+
+        try:
+            with open(self.loot_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.debug(f"Failed to save loot file: {e}")
+
+        # Also generate HTML report
+        try:
+            from loot_report import generate_loot_html
+            html_path = self.loot_file.rsplit(".", 1)[0] + ".html"
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(generate_loot_html(data))
+        except Exception as e:
+            logger.debug(f"Failed to save loot HTML: {e}")
+
+    def _load_raw(self) -> dict:
+        """Load raw JSON from loot file."""
+        if not self.loot_file or not os.path.isfile(self.loot_file):
+            return {}
+        try:
+            with open(self.loot_file, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def load_loot(self):
+        """Load loot data from JSON file (does NOT load previous sessions
+        into current counters — current session starts fresh)."""
+        data = self._load_raw()
+        if not data:
+            return
+
+        all_time = data.get("all_time", {})
+        total = all_time.get("total", 0)
+        sessions = data.get("sessions", [])
+        logger.info(f"Loot file: {total} fish across {len(sessions)} session(s)")

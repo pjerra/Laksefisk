@@ -5,8 +5,10 @@ from typing import Callable, List, Optional, Tuple
 
 import wow_process
 from bite_watcher import IBiteWatcher
+from bobber_calibration import sweep_calibrate
 from bobber_finder import IBobberFinder
 from models import FishingAction, FishingEvent
+from pixel_bridge import PixelBridge
 from timed_action import TimedAction
 
 EMPTY = (0, 0)
@@ -41,6 +43,18 @@ class LaksefiskBot:
         self._start_time = time.time()
         self._lure_time = 0.0  # force lure on first start
         self.fishing_event_handler: Callable[[FishingEvent], None] = lambda e: None
+        self.fish_tracker = None  # set by GUI to enable loot tracking
+        self.pixel_bridge: Optional[PixelBridge] = None  # set by GUI
+        self._last_loot_parity: Optional[int] = None
+        self.stop_on_player_nearby: bool = False
+        self.stop_on_bags_full: bool = False
+        self.auto_calibrate: bool = False
+        self.auto_delete_junk: bool = False
+        self.container_key: Optional[int] = None
+        self.auto_open_containers: bool = False
+        self._junk_delete_count: int = 0
+        self._pixel_classifier = None  # set by GUI for auto-calibration
+        self._calibrated: bool = False  # sweep once at start
         logger.info("Laksefisk Created.")
 
     def start(self):
@@ -50,11 +64,23 @@ class LaksefiskBot:
 
         while self._is_enabled:
             try:
+                # Check pixel bridge for stop conditions before casting
+                if self.pixel_bridge and self._check_stop_conditions():
+                    continue
+
+                self._try_delete_junk()
+
                 logger.info(f"Pressing key {self.cast_key} to Cast.")
                 self._apply_lure_if_due()
                 self.fishing_event_handler(FishingEvent(action=FishingAction.Cast))
                 wow_process.press_key(self.cast_key)
                 self._watch(2000)
+                if self.auto_calibrate and self._pixel_classifier and not self._calibrated:
+                    if sweep_calibrate(self._pixel_classifier):
+                        self._calibrated = True
+                        logger.info("Auto-calibration complete — using calibrated values")
+                    else:
+                        logger.warning("Auto-calibration failed — will retry next cast")
                 self._wait_for_bite()
             except Exception as e:
                 logger.error(str(e))
@@ -71,6 +97,67 @@ class LaksefiskBot:
 
     def set_lure_key(self, key: Optional[int]):
         self.lure_key = key
+
+    def _try_open_container(self):
+        """Press container key if a container was just looted."""
+        if not self.auto_open_containers or not self.container_key or not self.pixel_bridge:
+            return
+        data = self.pixel_bridge.read()
+        if data and data.container_looted:
+            logger.info("Container looted — pressing key to open")
+            time.sleep(0.5)
+            wow_process.press_key(self.container_key)
+            time.sleep(1.0)
+
+    def _try_delete_junk(self):
+        """Press F12 to confirm the destroy popup shown by the addon."""
+        if not self.auto_delete_junk or not self.pixel_bridge:
+            return
+        data = self.pixel_bridge.read()
+        if data is None or not data.junk_on_cursor:
+            return
+        logger.info("Junk on cursor — pressing F12 to confirm delete")
+        # Wait for addon to show the DELETE_ITEM popup (0.1s after pickup)
+        time.sleep(0.3)
+        # F12 is override-bound by addon to /click StaticPopup1Button1
+        wow_process.press_key(0x7B)  # VK_F12
+        # Wait for addon to detect cursor cleared and reset flag (3s timeout)
+        t0 = time.time()
+        while time.time() - t0 < 3.0:
+            time.sleep(0.2)
+            data = self.pixel_bridge.read()
+            if data is None or not data.junk_on_cursor:
+                self._junk_delete_count += 1
+                logger.info(f"Junk deleted (total: {self._junk_delete_count})")
+                return
+        logger.warning("Junk delete timed out — F12 may not have triggered")
+
+    def _check_stop_conditions(self) -> bool:
+        """Check pixel bridge for stop conditions. Returns True if paused."""
+        try:
+            data = self.pixel_bridge.read()
+            if data is None:
+                return False
+
+            if self.stop_on_player_nearby and data.player_nearby:
+                logger.warning("Player nearby — pausing fishing")
+                self.fishing_event_handler(FishingEvent(action=FishingAction.Cast))
+                while self._is_enabled:
+                    time.sleep(3)
+                    data = self.pixel_bridge.read()
+                    if data is None or not data.player_nearby:
+                        logger.info("Player gone — resuming fishing")
+                        return True
+                return True
+
+            if self.stop_on_bags_full and data.bags_full:
+                logger.warning("Bags full — stopping fishing")
+                self.stop()
+                return True
+
+        except Exception as e:
+            logger.debug(f"Stop condition check error: {e}")
+        return False
 
     def _apply_lure_if_due(self):
         if self.lure_key is None:
@@ -98,9 +185,9 @@ class LaksefiskBot:
             return
 
         self.bite_watcher.reset(bobber_pos)
-        logger.info(f"Bobber start position: {bobber_pos}")
 
         timed_task = TimedAction(lambda a: logger.info("Fishing timed out!"), 25_000, 25)
+        last_junk_check = 0.0
 
         while self._is_enabled:
             current_pos = self._find_bobber()
@@ -111,6 +198,12 @@ class LaksefiskBot:
                 self._loot(current_pos)
                 return
 
+            # Periodically check for junk from previous loot (addon may be slow)
+            now = time.time()
+            if now - last_junk_check > 2.0:
+                last_junk_check = now
+                self._try_delete_junk()
+
             if not timed_task.execute_if_due():
                 return
 
@@ -118,12 +211,49 @@ class LaksefiskBot:
         delay = self.loot_wait_min + _rng.random() * (self.loot_wait_max - self.loot_wait_min)
         logger.info(f"Waiting {delay:.1f}s before looting...")
         time.sleep(delay)
-        logger.info(f"Moving mouse to bobber at {bobber_position} and right-clicking.")
-        wow_process.right_click_mouse(bobber_position)
+        ox, oy = _rng.randint(-5, 5), _rng.randint(-5, 5)
+        click_pos = (bobber_position[0] + ox, bobber_position[1] + oy)
+        logger.info(f"Looting bobber (offset {ox:+d},{oy:+d}).")
+        wow_process.right_click_mouse(click_pos)
         # Wait for loot to complete before casting again
         loot_wait = 0.3 + _rng.random() * 0.7
         logger.info(f"Waiting {loot_wait:.1f}s for loot to complete...")
         time.sleep(loot_wait)
+        # Read loot from pixel bridge
+        if self.pixel_bridge:
+            self._read_loot_from_bridge()
+            self._try_open_container()
+        # Quick poll for addon junk deletion — backup check happens during fishing
+        if self.auto_delete_junk and self.pixel_bridge:
+            t0 = time.time()
+            while time.time() - t0 < 1.5:
+                data = self.pixel_bridge.read()
+                if data is not None and data.junk_on_cursor:
+                    self._try_delete_junk()
+                    break
+                time.sleep(0.3)
+
+    def _read_loot_from_bridge(self):
+        """Read loot info from pixel bridge instead of OCR."""
+        try:
+            data = self.pixel_bridge.read()
+            if data is None:
+                logger.warning("Pixel bridge: bar not found")
+                return
+
+            # Check if loot parity changed (new loot detected)
+            if self._last_loot_parity is not None and data.loot_parity == self._last_loot_parity:
+                logger.debug("Pixel bridge: loot parity unchanged, no new loot")
+                return
+
+            self._last_loot_parity = data.loot_parity
+
+            if data.item_id > 0 and self.fish_tracker:
+                name = data.item_name
+                logger.info(f"Pixel bridge: looted [{name}] (ID: {data.item_id})")
+                self.fish_tracker.record_pixel_loot(name, data.item_id)
+        except Exception as e:
+            logger.warning(f"Pixel bridge read error: {e}")
 
     def _find_bobber(self) -> Tuple[int, int]:
         timer = TimedAction(lambda a: logger.info(f"Waited {a.elapsed_secs}s for target"), 1000, 5)

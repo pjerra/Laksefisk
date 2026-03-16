@@ -1,10 +1,7 @@
 """
-Laksefisk GUI — Dark-themed, dockable, resizable fishing bot interface.
+Laksefisk GUI — Dark-themed, resizable fishing bot interface.
 
-Layout H (vertical): status bar → bobber view + amplitude overlay → fish list → log
-Layout F (horizontal): status + bobber | fish | log (when docked top)
-
-Docks to screen edges (left/top/right) or floats freely.
+Layout: status bar → bobber view + amplitude overlay → fish list → log (vertical stack)
 """
 
 from __future__ import annotations
@@ -17,6 +14,8 @@ import random
 import threading
 import time
 import tkinter as tk
+import webbrowser
+import winsound
 from collections import deque
 from tkinter import ttk
 from typing import List, Optional, Tuple
@@ -41,7 +40,6 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(_SCRIPT_DIR, "config.json")
 LOOT_FILE = os.path.join(_SCRIPT_DIR, "loot.json")
 STRIKE_VALUE = 7
-_SNAP_THRESHOLD = 20
 
 DEFAULT_CONFIG = {
     "cast_key": 0x34,
@@ -51,18 +49,21 @@ DEFAULT_CONFIG = {
     "colour_mode": "Red",
     "colour_multiplier": 0.5,
     "colour_closeness_multiplier": 2.0,
-    "dock_position": "floating",
     "window_width": 200,
     "window_height": 500,
-    "horizontal_height": 110,
-    "vertical_sash_positions": [120, 280],
-    "horizontal_sash_positions": [130, 350],
+    "sash_positions": [120, 280],
     "log_collapsed": False,
     "bobber_zoom": 3.0,
     "always_on_top": True,
     "stop_on_player": False,
     "stop_on_bags": False,
+    "auto_delete_junk": False,
     "auto_calibrate": False,
+    "bite_sensitivity": 7,
+    "sound_alerts": False,
+    "pixel_bar_region": None,
+    "container_key": None,
+    "auto_open_containers": False,
 }
 
 # Dark theme
@@ -290,6 +291,8 @@ class SettingsPopup(tk.Toplevel):
 
     def __init__(self, parent: "App", on_change: callable):
         super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
         self.title("Settings")
         self.configure(bg=BG_DARK)
         self.geometry("420x600")
@@ -360,6 +363,17 @@ class SettingsPopup(tk.Toplevel):
             resolution=0.1, orient="horizontal", bg=PANEL_BG, fg=TEXT_PRIMARY,
             troughcolor=PANEL_DEEP, highlightthickness=0,
             command=lambda _: self._on_loot_change()
+        ).grid(row=row, column=1, sticky="ew", pady=2, padx=(4, 0))
+        row += 1
+
+        # --- Bite Sensitivity ---
+        self._add_label(container, "Bite Sensitivity", row)
+        self._bite_var = tk.IntVar(value=self._parent._bite_sensitivity)
+        tk.Scale(
+            container, variable=self._bite_var, from_=1, to=20,
+            resolution=1, orient="horizontal", bg=PANEL_BG, fg=TEXT_PRIMARY,
+            troughcolor=PANEL_DEEP, highlightthickness=0,
+            command=lambda _: self._on_bite_change()
         ).grid(row=row, column=1, sticky="ew", pady=2, padx=(4, 0))
         row += 1
 
@@ -449,6 +463,17 @@ class SettingsPopup(tk.Toplevel):
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
         row += 1
 
+        self._auto_delete_var = tk.BooleanVar(
+            value=self._parent._cfg.get("auto_delete_junk", False)
+        )
+        tk.Checkbutton(
+            container, text="Auto-delete junk", variable=self._auto_delete_var,
+            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
+            activebackground=BG_DARK, activeforeground=ACCENT,
+            command=self._on_stop_conditions
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        row += 1
+
         self._topmost_var = tk.BooleanVar(
             value=self._parent._cfg.get("always_on_top", True)
         )
@@ -460,22 +485,55 @@ class SettingsPopup(tk.Toplevel):
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
         row += 1
 
+        self._sound_var = tk.BooleanVar(
+            value=self._parent._cfg.get("sound_alerts", False)
+        )
+        tk.Checkbutton(
+            container, text="Sound alerts", variable=self._sound_var,
+            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
+            activebackground=BG_DARK, activeforeground=ACCENT,
+            command=self._on_stop_conditions
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        row += 1
+
+        self._auto_container_var = tk.BooleanVar(
+            value=self._parent._cfg.get("auto_open_containers", False)
+        )
+        tk.Checkbutton(
+            container, text="Auto-open containers", variable=self._auto_container_var,
+            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
+            activebackground=BG_DARK, activeforeground=ACCENT,
+            command=self._on_stop_conditions
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        row += 1
+
+        # --- Container Key ---
+        self._add_label(container, "Container Key", row)
+        self._container_var = tk.StringVar(
+            value=self._parent._vk_to_label(self._parent._cfg["container_key"])
+            if self._parent._cfg.get("container_key") else "None"
+        )
+        container_entry = tk.Entry(
+            container, textvariable=self._container_var, width=6,
+            bg=PANEL_DEEP, fg=TEXT_PRIMARY, font=("Consolas", 10),
+            insertbackground=TEXT_PRIMARY, justify="center"
+        )
+        container_entry.grid(row=row, column=1, sticky="w", pady=2)
+        container_entry.bind("<Key>", self._on_container_key)
+        row += 1
+
+        # --- Pixel Bar Region ---
+        tk.Button(
+            container, text="Pixel Bar Region...", bg=PANEL_DEEP, fg=TEXT_PRIMARY,
+            font=("Consolas", 9), relief="flat", padx=8, pady=4,
+            command=self._on_pixel_bar_region, cursor="hand2"
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        row += 1
+
         # --- Separator ---
         ttk.Separator(container, orient="horizontal").grid(
             row=row, column=0, columnspan=2, sticky="ew", pady=6
         )
-        row += 1
-
-        # --- Dock Position ---
-        self._add_label(container, "Dock Position", row)
-        self._dock_var = tk.StringVar(value=self._parent._dock_mode)
-        dock_menu = ttk.Combobox(
-            container, textvariable=self._dock_var,
-            values=["left", "top", "right", "floating"],
-            state="readonly", width=10
-        )
-        dock_menu.grid(row=row, column=1, sticky="w", pady=2, padx=(4, 0))
-        dock_menu.bind("<<ComboboxSelected>>", self._on_dock_change)
         row += 1
 
         # --- Reset ---
@@ -623,6 +681,13 @@ class SettingsPopup(tk.Toplevel):
             self._parent._bot.loot_wait_max = self._parent._loot_max
         self._parent._save_cfg()
 
+    def _on_bite_change(self):
+        val = self._bite_var.get()
+        self._parent._bite_sensitivity = val
+        self._parent._bite_watcher.strike_value = val
+        self._parent._amplitude._strike = val
+        self._parent._save_cfg()
+
     def _on_mode_change(self):
         mode = ClassifierMode.Red if self._mode_var.get() == "Red" else ClassifierMode.Blue
         self._parent._pc.mode = mode
@@ -648,20 +713,74 @@ class SettingsPopup(tk.Toplevel):
     def _on_stop_conditions(self):
         self._parent._cfg["stop_on_player"] = self._stop_player_var.get()
         self._parent._cfg["stop_on_bags"] = self._stop_bags_var.get()
+        self._parent._cfg["auto_delete_junk"] = self._auto_delete_var.get()
+        self._parent._cfg["sound_alerts"] = self._sound_var.get()
+        self._parent._cfg["auto_open_containers"] = self._auto_container_var.get()
         if self._parent._bot:
             self._parent._bot.stop_on_player_nearby = self._stop_player_var.get()
             self._parent._bot.stop_on_bags_full = self._stop_bags_var.get()
+            self._parent._bot.auto_delete_junk = self._auto_delete_var.get()
+            self._parent._bot.auto_open_containers = self._auto_container_var.get()
         self._parent._save_cfg()
+
+    def _on_container_key(self, event):
+        vk = self._parent._keysym_to_vk(event.keysym)
+        if vk:
+            self._parent._cfg["container_key"] = vk
+            self._container_var.set(self._parent._vk_to_label(vk))
+            if self._parent._bot:
+                self._parent._bot.container_key = vk
+            self._parent._save_cfg()
+
+    def _on_pixel_bar_region(self):
+        """Open dialog to set/clear the pixel bar scan region."""
+        dlg = tk.Toplevel(self)
+        dlg.title("Pixel Bar Region")
+        dlg.configure(bg=BG_DARK)
+        dlg.geometry("260x200")
+        dlg.transient(self)
+        dlg.grab_set()
+
+        cur = self._parent._cfg.get("pixel_bar_region")
+        cached = self._parent._pixel_bridge.get_bar_position()
+        defaults = cur or cached or {"left": 0, "top": 0, "width": 200, "height": 20}
+
+        fields = {}
+        for i, key in enumerate(["left", "top", "width", "height"]):
+            tk.Label(dlg, text=key.capitalize(), bg=BG_DARK, fg=TEXT_DIM,
+                     font=("Consolas", 9)).grid(row=i, column=0, sticky="w", padx=8, pady=4)
+            var = tk.IntVar(value=defaults.get(key, 0))
+            tk.Entry(dlg, textvariable=var, width=8, bg=PANEL_DEEP, fg=TEXT_PRIMARY,
+                     font=("Consolas", 10), insertbackground=TEXT_PRIMARY
+                     ).grid(row=i, column=1, padx=8, pady=4)
+            fields[key] = var
+
+        def _apply():
+            region = {k: v.get() for k, v in fields.items()}
+            self._parent._cfg["pixel_bar_region"] = region
+            self._parent._pixel_bridge.set_scan_region(region)
+            self._parent._save_cfg()
+            dlg.destroy()
+
+        def _auto():
+            self._parent._cfg["pixel_bar_region"] = None
+            self._parent._pixel_bridge.set_scan_region(None)
+            self._parent._save_cfg()
+            dlg.destroy()
+
+        btn_row = tk.Frame(dlg, bg=BG_DARK)
+        btn_row.grid(row=4, column=0, columnspan=2, pady=12)
+        tk.Button(btn_row, text="Apply", bg=ACCENT, fg="black",
+                  font=("Consolas", 9), relief="flat", padx=8, pady=4,
+                  command=_apply).pack(side="left", padx=4)
+        tk.Button(btn_row, text="Auto-detect", bg=PANEL_DEEP, fg=TEXT_PRIMARY,
+                  font=("Consolas", 9), relief="flat", padx=8, pady=4,
+                  command=_auto).pack(side="left", padx=4)
 
     def _on_topmost(self):
         val = self._topmost_var.get()
         self._parent._cfg["always_on_top"] = val
         self._parent.attributes("-topmost", val)
-        self._parent._save_cfg()
-
-    def _on_dock_change(self, _event=None):
-        dock = self._dock_var.get()
-        self._parent._apply_dock(dock)
         self._parent._save_cfg()
 
     def _on_reset(self):
@@ -675,6 +794,22 @@ class SettingsPopup(tk.Toplevel):
         self._parent._pc.mode = mode
         self._parent._pc.colour_multiplier = DEFAULT_CONFIG["colour_multiplier"]
         self._parent._pc.colour_closeness_multiplier = DEFAULT_CONFIG["colour_closeness_multiplier"]
+        self._parent._bite_sensitivity = DEFAULT_CONFIG["bite_sensitivity"]
+        self._parent._bite_watcher.strike_value = DEFAULT_CONFIG["bite_sensitivity"]
+        self._parent._amplitude._strike = DEFAULT_CONFIG["bite_sensitivity"]
+        self._parent.attributes("-topmost", DEFAULT_CONFIG["always_on_top"])
+        if self._parent._bot:
+            self._parent._bot.set_cast_key(DEFAULT_CONFIG["cast_key"])
+            self._parent._bot.set_lure_key(DEFAULT_CONFIG["lure_key"])
+            self._parent._bot.loot_wait_min = DEFAULT_CONFIG["loot_wait_min"]
+            self._parent._bot.loot_wait_max = DEFAULT_CONFIG["loot_wait_max"]
+            self._parent._bot.stop_on_player_nearby = DEFAULT_CONFIG["stop_on_player"]
+            self._parent._bot.stop_on_bags_full = DEFAULT_CONFIG["stop_on_bags"]
+            self._parent._bot.auto_calibrate = DEFAULT_CONFIG["auto_calibrate"]
+            self._parent._bot.auto_delete_junk = DEFAULT_CONFIG["auto_delete_junk"]
+            self._parent._bot.container_key = DEFAULT_CONFIG["container_key"]
+            self._parent._bot.auto_open_containers = DEFAULT_CONFIG["auto_open_containers"]
+        self._parent._pixel_bridge.set_scan_region(DEFAULT_CONFIG["pixel_bar_region"])
         self._parent._save_cfg()
         self.destroy()
         self._parent._on_settings()
@@ -699,7 +834,6 @@ class App(tk.Tk):
         self.configure(bg=BG_DARK)
 
         # Window geometry from config
-        dock = self._cfg.get("dock_position", "floating")
         w = self._cfg.get("window_width", 200)
         h = self._cfg.get("window_height", 500)
         self.geometry(f"{w}x{h}")
@@ -709,11 +843,6 @@ class App(tk.Tk):
         if self._cfg.get("always_on_top", True):
             self.attributes("-topmost", True)
 
-        # Dock mode tracking
-        self._dock_mode = dock
-        self._layout_mode = "horizontal" if dock == "top" else "vertical"
-        self._configure_after_id = None
-
         # Core components
         self._pc = PixelClassifier()
         self._pc.colour_multiplier = self._cfg["colour_multiplier"]
@@ -721,7 +850,8 @@ class App(tk.Tk):
         self._pc.mode = ClassifierMode.Red if self._cfg["colour_mode"] == "Red" else ClassifierMode.Blue
         self._pc.set_configuration(wow_process.is_wow_classic())
         self._bobber_finder = SearchBobberFinder(self._pc)
-        self._bite_watcher = PositionBiteWatcher(STRIKE_VALUE)
+        self._bite_sensitivity = self._cfg.get("bite_sensitivity", STRIKE_VALUE)
+        self._bite_watcher = PositionBiteWatcher(self._bite_sensitivity)
         self._bot: Optional[LaksefiskBot] = None
         self._bot_thread: Optional[threading.Thread] = None
         self._cast_key = self._cfg["cast_key"]
@@ -739,7 +869,13 @@ class App(tk.Tk):
         self._fish_tracker.set_on_update(lambda: self.after(0, self._update_fish_display))
 
         # Pixel bridge (replaces OCR for loot detection)
-        self._pixel_bridge = PixelBridge()
+        scan_region = self._cfg.get("pixel_bar_region")
+        self._pixel_bridge = PixelBridge(scan_region=scan_region)
+
+        # Sound alert state tracking
+        self._prev_player_nearby = False
+        self._prev_bags_full = False
+        self._prev_whisper_flag = 0
 
         self._bobber_finder.bitmap_callbacks.append(self._on_bitmap_event)
 
@@ -748,9 +884,6 @@ class App(tk.Tk):
         self._poll()
         self._check_addon_status()
 
-        # Apply initial dock position
-        if dock != "floating":
-            self.after(100, lambda: self._apply_dock(dock))
 
     # ------------------------------------------------------------------
     # UI layout
@@ -765,8 +898,7 @@ class App(tk.Tk):
         self._build_status_bar()
 
         # PanedWindow for resizable panels
-        orient = "horizontal" if self._layout_mode == "horizontal" else "vertical"
-        self._paned = ttk.PanedWindow(self._main_frame, orient=orient)
+        self._paned = ttk.PanedWindow(self._main_frame, orient="vertical")
         self._paned.pack(fill="both", expand=True, padx=2, pady=2)
 
         # Build panels
@@ -784,9 +916,6 @@ class App(tk.Tk):
         # Restore sash positions
         self._restore_sash_positions()
 
-        # Bind resize for dock detection
-        self.bind("<Configure>", self._on_configure)
-
         # Save config on close
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -796,10 +925,10 @@ class App(tk.Tk):
 
         # Play/stop toggle — canvas-drawn circle
         self._toggle_canvas = tk.Canvas(
-            bar, width=24, height=24, bg=BG_DARK,
+            bar, width=32, height=32, bg=BG_DARK,
             highlightthickness=0, cursor="hand2"
         )
-        self._toggle_canvas.pack(side="left", padx=(0, 4))
+        self._toggle_canvas.pack(side="left", padx=(0, 6))
         self._toggle_canvas.bind("<Button-1>", self._on_toggle)
         self._draw_toggle()
 
@@ -807,17 +936,21 @@ class App(tk.Tk):
         self._status_var = tk.StringVar(value="Idle")
         self._status_label = tk.Label(
             bar, textvariable=self._status_var, bg=BG_DARK,
-            fg=ACCENT, font=("Consolas", 9)
+            fg=ACCENT, font=("Consolas", 12, "bold")
         )
-        self._status_label.pack(side="left", padx=(0, 4))
+        self._status_label.pack(side="left", padx=(0, 8))
 
-        # Addon dot
+        # Addon status — dot + label
         self._addon_canvas = tk.Canvas(
-            bar, width=10, height=10, bg=BG_DARK, highlightthickness=0
+            bar, width=14, height=14, bg=BG_DARK, highlightthickness=0
         )
-        self._addon_canvas.pack(side="left", padx=(0, 4))
-        self._addon_dot = self._addon_canvas.create_oval(1, 1, 9, 9, fill=TEXT_DIM)
-        self._addon_tooltip = _Tooltip(self._addon_canvas, "Addon: Not found")
+        self._addon_canvas.pack(side="left", padx=(0, 2))
+        self._addon_dot = self._addon_canvas.create_oval(1, 1, 13, 13, fill=TEXT_DIM)
+        self._addon_label = tk.Label(
+            bar, text="No addon", bg=BG_DARK,
+            fg=TEXT_DIM, font=("Consolas", 8)
+        )
+        self._addon_label.pack(side="left", padx=(0, 4))
 
         # Spacer
         tk.Frame(bar, bg=BG_DARK).pack(side="left", fill="x", expand=True)
@@ -841,12 +974,12 @@ class App(tk.Tk):
     def _draw_toggle(self):
         self._toggle_canvas.delete("all")
         if self._is_running:
-            self._toggle_canvas.create_oval(2, 2, 22, 22, fill=ALERT, outline="")
-            self._toggle_canvas.create_rectangle(8, 8, 16, 16, fill=BG_DARK, outline="")
+            self._toggle_canvas.create_oval(2, 2, 30, 30, fill=ALERT, outline="")
+            self._toggle_canvas.create_rectangle(10, 10, 22, 22, fill=BG_DARK, outline="")
         else:
-            self._toggle_canvas.create_oval(2, 2, 22, 22, fill=ACCENT, outline="")
+            self._toggle_canvas.create_oval(2, 2, 30, 30, fill=ACCENT, outline="")
             self._toggle_canvas.create_polygon(
-                10, 7, 10, 17, 18, 12, fill=BG_DARK, outline=""
+                13, 8, 13, 24, 25, 16, fill=BG_DARK, outline=""
             )
 
     def _on_toggle(self, _event=None):
@@ -865,7 +998,7 @@ class App(tk.Tk):
         self._screenshot_photo = None
 
         # Amplitude overlay (draws on same canvas)
-        self._amplitude = AmplitudeOverlay(self._screenshot_canvas, STRIKE_VALUE)
+        self._amplitude = AmplitudeOverlay(self._screenshot_canvas, self._bite_sensitivity)
 
         # Flying fish overlay
         self._flying_fish = FlyingFishOverlay(self._screenshot_canvas)
@@ -890,9 +1023,12 @@ class App(tk.Tk):
         header.pack(fill="x")
         self._fish_header_label = tk.Label(
             header, text="Fish Caught (0)", bg=PANEL_BG,
-            fg=ACCENT, font=("Consolas", 9, "bold"), anchor="w"
+            fg=ACCENT, font=("Consolas", 9, "bold"), anchor="w",
+            cursor="hand2"
         )
         self._fish_header_label.pack(side="left")
+        self._fish_header_label.bind("<Button-1>", lambda _: webbrowser.open(
+            os.path.join(_SCRIPT_DIR, "loot.html")))
         tk.Button(
             header, text="\u21bb", bg=PANEL_BG, fg=TEXT_DIM,
             font=("Consolas", 10), relief="flat", bd=0,
@@ -912,21 +1048,22 @@ class App(tk.Tk):
         self._fish_text.tag_configure("count", foreground=TEXT_DIM)
 
     def _build_log_panel(self):
-        self._log_frame = tk.Frame(self._paned, bg=PANEL_BG)
-
-        # Header
-        header = tk.Frame(self._log_frame, bg=PANEL_BG, pady=2, padx=4)
-        header.pack(fill="x")
+        # Log header sits outside the PanedWindow so it's always visible
+        self._log_header = tk.Frame(self, bg=PANEL_BG, pady=2, padx=4)
+        self._log_header.pack(fill="x", side="bottom")
         tk.Label(
-            header, text="Log", bg=PANEL_BG, fg=TEXT_DIM,
+            self._log_header, text="Log", bg=PANEL_BG, fg=TEXT_DIM,
             font=("Consolas", 9)
         ).pack(side="left")
         self._log_chevron = tk.Label(
-            header, text="\u25b2" if self._cfg.get("log_collapsed", False) else "\u25bc",
+            self._log_header, text="\u25b2" if self._cfg.get("log_collapsed", False) else "\u25bc",
             bg=PANEL_BG, fg=TEXT_DIM, font=("Consolas", 8), cursor="hand2"
         )
         self._log_chevron.pack(side="right")
         self._log_chevron.bind("<Button-1>", self._toggle_log)
+
+        # Log content frame goes inside PanedWindow
+        self._log_frame = tk.Frame(self._paned, bg=PANEL_BG)
 
         # Log text widget
         self._log_text = tk.Text(
@@ -1007,107 +1144,16 @@ class App(tk.Tk):
     # Dock detection and layout switching
     # ------------------------------------------------------------------
 
-    def _on_configure(self, event=None):
-        if event and event.widget != self:
-            return
-        if self._configure_after_id:
-            self.after_cancel(self._configure_after_id)
-        self._configure_after_id = self.after(100, self._check_dock)
-
-    def _check_dock(self):
-        self._configure_after_id = None
-        x = self.winfo_x()
-        y = self.winfo_y()
-        w = self.winfo_width()
-        sw = self.winfo_screenwidth()
-
-        old_mode = self._layout_mode
-
-        if y <= _SNAP_THRESHOLD:
-            new_dock = "top"
-            new_layout = "horizontal"
-        elif x <= _SNAP_THRESHOLD:
-            new_dock = "left"
-            new_layout = "vertical"
-        elif x + w >= sw - _SNAP_THRESHOLD:
-            new_dock = "right"
-            new_layout = "vertical"
-        else:
-            new_dock = "floating"
-            new_layout = self._layout_mode
-
-        self._dock_mode = new_dock
-
-        if new_layout != old_mode:
-            self._layout_mode = new_layout
-            self._rebuild_layout()
-
-    def _rebuild_layout(self):
-        """Destroy and rebuild paned window with new orientation."""
-        self._save_sash_positions()
-        self._paned.destroy()
-
-        if self._layout_mode == "horizontal":
-            self._paned = ttk.PanedWindow(self._main_frame, orient="horizontal")
-            self.minsize(400, 90)
-        else:
-            self._paned = ttk.PanedWindow(self._main_frame, orient="vertical")
-            self.minsize(160, 300)
-
-        self._paned.pack(fill="both", expand=True, padx=2, pady=2)
-
-        # Recreate panel frames inside new paned window
-        self._build_bobber_view()
-        self._build_fish_list()
-        self._build_log_panel()
-
-        self._paned.add(self._bobber_frame, weight=3)
-        self._paned.add(self._fish_frame, weight=2)
-        if not self._log_collapsed:
-            self._paned.add(self._log_frame, weight=1)
-
-        self._restore_sash_positions()
-        self._update_fish_display()
-
-    def _apply_dock(self, dock: str):
-        """Move window to dock position."""
-        self._dock_mode = dock
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        w = self._cfg.get("window_width", 200)
-        h = self._cfg.get("window_height", 500)
-
-        old_mode = self._layout_mode
-
-        if dock == "left":
-            self._layout_mode = "vertical"
-            self.geometry(f"{w}x{sh}+0+0")
-        elif dock == "right":
-            self._layout_mode = "vertical"
-            self.geometry(f"{w}x{sh}+{sw - w}+0")
-        elif dock == "top":
-            self._layout_mode = "horizontal"
-            hh = self._cfg.get("horizontal_height", 110)
-            self.geometry(f"{sw}x{hh}+0+0")
-        else:
-            self._layout_mode = "vertical"
-            self.geometry(f"{w}x{h}")
-
-        if old_mode != self._layout_mode:
-            self._rebuild_layout()
-
     def _save_sash_positions(self):
         try:
             n = len(self._paned.panes()) - 1
             positions = [self._paned.sashpos(i) for i in range(n)]
-            key = f"{self._layout_mode}_sash_positions"
-            self._cfg[key] = positions
+            self._cfg["sash_positions"] = positions
         except Exception:
             pass
 
     def _restore_sash_positions(self):
-        key = f"{self._layout_mode}_sash_positions"
-        positions = self._cfg.get(key)
+        positions = self._cfg.get("sash_positions")
         if positions:
             self.after(50, lambda: self._apply_sash_positions(positions))
 
@@ -1199,6 +1245,9 @@ class App(tk.Tk):
         self._bot.stop_on_player_nearby = self._cfg.get("stop_on_player", False)
         self._bot.stop_on_bags_full = self._cfg.get("stop_on_bags", False)
         self._bot.auto_calibrate = self._cfg.get("auto_calibrate", False)
+        self._bot.auto_delete_junk = self._cfg.get("auto_delete_junk", False)
+        self._bot.container_key = self._cfg.get("container_key")
+        self._bot.auto_open_containers = self._cfg.get("auto_open_containers", False)
         self._bot._pixel_classifier = self._pc
         self._bot.start()
 
@@ -1267,16 +1316,49 @@ class App(tk.Tk):
     def _on_reset_fish(self):
         self._fish_tracker.reset()
 
+    def _play_alert(self, alert_type: str):
+        """Play a sound alert in a background thread."""
+        if not self._cfg.get("sound_alerts", False):
+            return
+        def _beep():
+            if alert_type == "player":
+                for _ in range(3):
+                    winsound.Beep(1200, 300)
+            elif alert_type == "bags":
+                winsound.Beep(800, 500)
+            elif alert_type == "stopped":
+                winsound.Beep(400, 800)
+            elif alert_type == "whisper":
+                for _ in range(2):
+                    winsound.Beep(1000, 150)
+        threading.Thread(target=_beep, daemon=True).start()
+
     def _check_addon_status(self):
         try:
             data = self._pixel_bridge.read()
             connected = data is not None
         except Exception:
+            data = None
             connected = False
 
         colour = ACCENT if connected else TEXT_DIM
         self._addon_canvas.itemconfig(self._addon_dot, fill=colour)
-        self._addon_tooltip.text = "Addon: Connected" if connected else "Addon: Not found"
+        self._addon_label.config(
+            text="Addon found" if connected else "No addon",
+            fg=ACCENT if connected else TEXT_DIM
+        )
+
+        # Sound alerts on state changes
+        if data is not None:
+            if data.player_nearby and not self._prev_player_nearby:
+                self._play_alert("player")
+            if data.bags_full and not self._prev_bags_full:
+                self._play_alert("bags")
+            if data.whisper_flag != self._prev_whisper_flag and data.whisper_flag:
+                self._play_alert("whisper")
+            self._prev_player_nearby = data.player_nearby
+            self._prev_bags_full = data.bags_full
+            self._prev_whisper_flag = data.whisper_flag
 
         self.after(2000, self._check_addon_status)
 
@@ -1310,9 +1392,18 @@ class App(tk.Tk):
         self._cfg["colour_mode"] = "Red" if self._pc.mode == ClassifierMode.Red else "Blue"
         self._cfg["colour_multiplier"] = self._pc.colour_multiplier
         self._cfg["colour_closeness_multiplier"] = self._pc.colour_closeness_multiplier
-        self._cfg["dock_position"] = self._dock_mode
+        self._cfg["bite_sensitivity"] = self._bite_sensitivity
         self._cfg["log_collapsed"] = self._log_collapsed
         self._cfg["always_on_top"] = bool(self.attributes("-topmost"))
+        self._cfg["sound_alerts"] = self._cfg.get("sound_alerts", False)
+        self._cfg["pixel_bar_region"] = self._cfg.get("pixel_bar_region")
+        self._cfg["container_key"] = self._cfg.get("container_key")
+        self._cfg["auto_open_containers"] = self._cfg.get("auto_open_containers", False)
+        if self._bot:
+            self._cfg["stop_on_player"] = self._bot.stop_on_player_nearby
+            self._cfg["stop_on_bags"] = self._bot.stop_on_bags_full
+            self._cfg["auto_calibrate"] = self._bot.auto_calibrate
+            self._cfg["auto_delete_junk"] = self._bot.auto_delete_junk
         self._cfg["window_width"] = self.winfo_width()
         self._cfg["window_height"] = self.winfo_height()
         self._save_sash_positions()

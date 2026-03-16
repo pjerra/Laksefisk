@@ -7,3 +7,13 @@ config.json
 dist/
 build/
 *.egg-info/
+*.exe
+*.rar
+*.spec
+backup/
+backup_*/
+data/
+loot.json
+loot.html
+pixel_region.json
+.superpowers/

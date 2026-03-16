@@ -161,10 +161,21 @@ class LaksefiskBot:
                 self.stop()
                 return True
 
-            # Combat — stop immediately, don't do anything
+            # Combat — pause until combat ends, then check if alive
             if data.combat:
-                logger.warning("In combat — stopping bot")
-                self.stop()
+                logger.warning("In combat — pausing bot")
+                while self._is_enabled:
+                    time.sleep(1)
+                    data = self._read_bridge()
+                    if data is None:
+                        continue
+                    if not data.alive:
+                        logger.error("Died in combat — stopping bot")
+                        self.stop()
+                        return True
+                    if not data.combat:
+                        logger.info("Combat ended — resuming fishing")
+                        return True
                 return True
 
             if self.stop_on_player_nearby and data.player_nearby:

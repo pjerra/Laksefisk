@@ -12,7 +12,7 @@
 --   [5..7]  Catch count — 8 bits binary (0-255), MSB first — pixel 7 B = player nearby
 --   [8..13]  Item ID — 18 bits binary (0-262143), MSB first across R,G,B
 --   [14..16] Bait time — seconds/5 as 8-bit binary (0=no bait, 255=1275s max) — pixel 16 B = mouseover bobber
---   [17..19] Player HP — percent as 8-bit binary (0-100), pixel 19 R = container looted, B = junk on cursor
+--   [17..19] Player HP — percent as 8-bit binary (0-100), pixel 19 B = junk on cursor
 --
 -- The pixel bar is placed at the bottom-centre of the screen.
 
@@ -40,9 +40,22 @@ local playerNearby = false
 local nearbyPlayers = {}     -- [name] = expiry time
 local mouseoverBobber = false  -- true when GameTooltip shows "Fishing Bobber"
 local junkOnCursor = false
-local containerLooted = false
-local containerTimeout = 0
-local containerItemName = nil  -- name of last looted container for secure button
+-- Known openable fishing containers (clams, trunks, crates, scrollcases)
+local openableContainers = {
+    [5523]  = true,  -- Small Barnacled Clam
+    [5524]  = true,  -- Thick-shelled Clam
+    [7973]  = true,  -- Big-mouth Clam
+    [24476] = true,  -- Jaggal Clam
+    [6357]  = true,  -- Sealed Crate
+    [20708] = true,  -- Tightly Sealed Trunk
+    [21113] = true,  -- Watertight Trunk
+    [21150] = true,  -- Iron Bound Trunk
+    [21228] = true,  -- Mithril Bound Trunk
+    [13874] = true,  -- Heavy Crate
+    [27513] = true,  -- Curious Crate
+    [27481] = true,  -- Heavy Supply Crate
+    [27511] = true,  -- Inscribed Scrollcase
+}
 
 -- Saved variables (persists across sessions via LaksefiskDB)
 LaksefiskDB = LaksefiskDB or {}
@@ -219,16 +232,8 @@ local function UpdateAllPixels()
         end
     end
 
-    -- Clear container flag after timeout
-    if containerLooted and GetTime() > containerTimeout then
-        containerLooted = false
-        containerItemName = nil
-        UpdateContainerButton(nil)
-    end
-
-    -- Pixel 19: R = container looted (overrides HP bit 1), G = HP bit 0, B = junk on cursor
-    local p19r = containerLooted and 255 or Bit(hp, 1)
-    SetPixelRaw(HP_START + 2, p19r, Bit(hp, 0), junkOnCursor and 255 or 0)
+    -- Pixel 19: R = HP bit 1, G = HP bit 0, B = junk on cursor
+    SetPixelRaw(HP_START + 2, Bit(hp, 1), Bit(hp, 0), junkOnCursor and 255 or 0)
 
 end
 
@@ -288,6 +293,59 @@ local function DeleteFromBags(itemName)
         end
     end
     return false
+end
+
+---------------------------------------------------------------------------
+-- Auto-open containers (clams, trunks, crates)
+---------------------------------------------------------------------------
+
+local function OpenContainerFromBags(targetID)
+    if InCombatLockdown() then return end
+    if GetFreeBagSlots() <= 2 then return end  -- don't open if bags nearly full
+    for bag = 0, 4 do
+        local numSlots = C_Container and C_Container.GetContainerNumSlots(bag)
+                         or GetContainerNumSlots(bag)
+        for slot = 1, (numSlots or 0) do
+            local itemID = C_Container and C_Container.GetContainerItemID(bag, slot)
+                           or GetContainerItemID(bag, slot)
+            if itemID and itemID == targetID then
+                if C_Container and C_Container.UseContainerItem then
+                    C_Container.UseContainerItem(bag, slot)
+                else
+                    UseContainerItem(bag, slot)
+                end
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function OpenAllContainers()
+    if InCombatLockdown() then return 0 end
+    if GetFreeBagSlots() <= 2 then return 0 end
+    local opened = 0
+    for bag = 0, 4 do
+        local numSlots = C_Container and C_Container.GetContainerNumSlots(bag)
+                         or GetContainerNumSlots(bag)
+        for slot = 1, (numSlots or 0) do
+            local itemID = C_Container and C_Container.GetContainerItemID(bag, slot)
+                           or GetContainerItemID(bag, slot)
+            if itemID and openableContainers[itemID] then
+                C_Timer.After(opened * 0.8, function()
+                    if not InCombatLockdown() and GetFreeBagSlots() > 2 then
+                        if C_Container and C_Container.UseContainerItem then
+                            C_Container.UseContainerItem(bag, slot)
+                        else
+                            UseContainerItem(bag, slot)
+                        end
+                    end
+                end)
+                opened = opened + 1
+            end
+        end
+    end
+    return opened
 end
 
 -- Debug log when destroy popup appears for junk deletion
@@ -361,26 +419,6 @@ local function CreatePixelBar()
     -- Harmless when no popup is showing (button not visible = no-op).
     SetOverrideBindingClick(barFrame, true, "F12", "StaticPopup1Button1")
 
-    -- Secure action button for opening containers.
-    -- Updated dynamically when a container is looted; bot presses the bound key.
-    local btn = CreateFrame("Button", "LaksefiskContainerBtn", UIParent, "SecureActionButtonTemplate")
-    btn:SetSize(1, 1)
-    btn:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -10, 10)  -- hidden off-screen
-    btn:SetAttribute("type", "item")
-    btn:SetAttribute("item", "")  -- set when container is looted
-    btn:Hide()
-end
-
-local function UpdateContainerButton(itemName)
-    local btn = _G["LaksefiskContainerBtn"]
-    if btn and not InCombatLockdown() then
-        btn:SetAttribute("item", itemName or "")
-        if itemName then
-            btn:Show()
-        else
-            btn:Hide()
-        end
-    end
 end
 
 ---------------------------------------------------------------------------
@@ -404,13 +442,11 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         LaksefiskDB = LaksefiskDB or {}
         LaksefiskDB.deleteList = LaksefiskDB.deleteList or {}
         LaksefiskDB.debugDelete = LaksefiskDB.debugDelete or false
+        if LaksefiskDB.autoOpenContainers == nil then LaksefiskDB.autoOpenContainers = true end
         CreatePixelBar()
-        -- Restore container key binding
-        if LaksefiskDB.containerKey then
-            SetOverrideBindingClick(barFrame, false, LaksefiskDB.containerKey, "LaksefiskContainerBtn")
-        end
         local nDel = #LaksefiskDB.deleteList
-        print("|cff4FC3F7Laksefisk|r pixel bridge v8 loaded (" .. NUM_PIXELS .. " pixels, " .. nDel .. " auto-delete items)")
+        local cStr = LaksefiskDB.autoOpenContainers and "ON" or "OFF"
+        print("|cff4FC3F7Laksefisk|r pixel bridge v8 loaded (" .. NUM_PIXELS .. " pixels, " .. nDel .. " auto-delete, containers " .. cStr .. ")")
 
     elseif event == "PLAYER_DEAD" then
         isDead = true
@@ -426,18 +462,11 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             lastItemName = itemName
             lastItemID = itemID or 0
             lootCounter = (lootCounter % 255) + 1
-            -- Check if looted item is an openable container (e.g. clams, trunks)
-            if itemID and itemID > 0 then
-                local spellName = GetItemSpell(itemID)
-                if spellName then
-                    containerLooted = true
-                    containerTimeout = GetTime() + 10
-                    containerItemName = itemName
-                    -- Update secure button so bot's keypress uses the item
-                    C_Timer.After(0.5, function()
-                        UpdateContainerButton(itemName)
-                    end)
-                end
+            -- Auto-open if it's a known container (clams, trunks, crates)
+            if LaksefiskDB.autoOpenContainers and itemID and openableContainers[itemID] then
+                C_Timer.After(0.5, function()
+                    OpenContainerFromBags(itemID)
+                end)
             end
             -- Auto-delete if on the junk list
             if ShouldDelete(itemName) then
@@ -645,28 +674,25 @@ SlashCmdList["LAKSEFISK"] = function(msg)
             print("|cff4FC3F7Laksefisk|r pixel bar |cffFF6666LOCKED|r")
         end
 
+    elseif cmd == "open" then
+        local n = OpenAllContainers()
+        if n > 0 then
+            print("|cff4FC3F7Laksefisk|r opening " .. n .. " container(s)...")
+        else
+            print("|cff4FC3F7Laksefisk|r no openable containers found in bags")
+        end
+
+    elseif cmd == "containers" then
+        LaksefiskDB.autoOpenContainers = not LaksefiskDB.autoOpenContainers
+        local state = LaksefiskDB.autoOpenContainers and "|cff66FF66ON|r" or "|cffFF6666OFF|r"
+        print("|cff4FC3F7Laksefisk|r auto-open containers: " .. state)
+
     elseif cmd == "resetbar" then
         local startX = (GetScreenWidth() - NUM_PIXELS * PIXEL_STEP) / 2
         barFrame:ClearAllPoints()
         barFrame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", startX, BAR_Y_OFFSET)
         LaksefiskDB.barPos = nil
         print("|cff4FC3F7Laksefisk|r pixel bar reset to default position")
-
-    elseif string.sub(cmd, 1, 13) == "containerkey " then
-        -- Set which key triggers the container secure button: /lf containerkey F9
-        local key = string.match(msg, "containerkey (.+)")
-        if key and key ~= "" then
-            key = string.upper(key)
-            if not InCombatLockdown() then
-                SetOverrideBindingClick(barFrame, false, key, "LaksefiskContainerBtn")
-                LaksefiskDB.containerKey = key
-                print("|cff4FC3F7Laksefisk|r container key bound to |cff66FF66" .. key .. "|r")
-            else
-                print("|cff4FC3F7Laksefisk|r cannot bind keys in combat")
-            end
-        else
-            print("|cff4FC3F7Laksefisk|r usage: /lf containerkey F9")
-        end
 
     else
         print("|cff4FC3F7Laksefisk|r commands:")
@@ -676,9 +702,10 @@ SlashCmdList["LAKSEFISK"] = function(msg)
         print("  /lf nearby  (toggle nearby player chat alerts)")
         print("  /lf nameplates  (toggle auto-enable friendly nameplates)")
         print("  /lf dead  (toggle dead)")
+        print("  /lf open  (open all containers in bags)")
+        print("  /lf containers  (toggle auto-open containers)")
         print("  /lf move  (unlock/lock pixel bar for dragging)")
         print("  /lf resetbar  (reset pixel bar to default position)")
-        print("  /lf containerkey <KEY>  (bind key to open containers, e.g. F9)")
         print("  /lf delete add <name>  (auto-delete fish)")
         print("  /lf delete remove <name>")
         print("  /lf delete list | clear | debug")

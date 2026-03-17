@@ -62,8 +62,6 @@ DEFAULT_CONFIG = {
     "bite_sensitivity": 7,
     "sound_alerts": False,
     "pixel_bar_region": None,
-    "container_key": None,
-    "auto_open_containers": False,
 }
 
 # Dark theme
@@ -495,32 +493,6 @@ class SettingsPopup(tk.Toplevel):
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
         row += 1
 
-        self._auto_container_var = tk.BooleanVar(
-            value=self._parent._cfg.get("auto_open_containers", False)
-        )
-        tk.Checkbutton(
-            container, text="Auto-open containers", variable=self._auto_container_var,
-            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
-            activebackground=BG_DARK, activeforeground=ACCENT,
-            command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
-        row += 1
-
-        # --- Container Key ---
-        self._add_label(container, "Container Key", row)
-        self._container_var = tk.StringVar(
-            value=self._parent._vk_to_label(self._parent._cfg["container_key"])
-            if self._parent._cfg.get("container_key") else "None"
-        )
-        container_entry = tk.Entry(
-            container, textvariable=self._container_var, width=6,
-            bg=PANEL_DEEP, fg=TEXT_PRIMARY, font=("Consolas", 10),
-            insertbackground=TEXT_PRIMARY, justify="center"
-        )
-        container_entry.grid(row=row, column=1, sticky="w", pady=2)
-        container_entry.bind("<Key>", self._on_container_key)
-        row += 1
-
         # --- Pixel Bar Region ---
         tk.Button(
             container, text="Pixel Bar Region...", bg=PANEL_DEEP, fg=TEXT_PRIMARY,
@@ -714,22 +686,11 @@ class SettingsPopup(tk.Toplevel):
         self._parent._cfg["stop_on_bags"] = self._stop_bags_var.get()
         self._parent._cfg["auto_delete_junk"] = self._auto_delete_var.get()
         self._parent._cfg["sound_alerts"] = self._sound_var.get()
-        self._parent._cfg["auto_open_containers"] = self._auto_container_var.get()
         if self._parent._bot:
             self._parent._bot.stop_on_player_nearby = self._stop_player_var.get()
             self._parent._bot.stop_on_bags_full = self._stop_bags_var.get()
             self._parent._bot.auto_delete_junk = self._auto_delete_var.get()
-            self._parent._bot.auto_open_containers = self._auto_container_var.get()
         self._parent._save_cfg()
-
-    def _on_container_key(self, event):
-        vk = self._parent._keysym_to_vk(event.keysym)
-        if vk:
-            self._parent._cfg["container_key"] = vk
-            self._container_var.set(self._parent._vk_to_label(vk))
-            if self._parent._bot:
-                self._parent._bot.container_key = vk
-            self._parent._save_cfg()
 
     def _on_pixel_bar_region(self):
         """Open dialog to set/clear the pixel bar scan region."""
@@ -806,8 +767,6 @@ class SettingsPopup(tk.Toplevel):
             self._parent._bot.stop_on_bags_full = DEFAULT_CONFIG["stop_on_bags"]
             self._parent._bot.auto_calibrate = DEFAULT_CONFIG["auto_calibrate"]
             self._parent._bot.auto_delete_junk = DEFAULT_CONFIG["auto_delete_junk"]
-            self._parent._bot.container_key = DEFAULT_CONFIG["container_key"]
-            self._parent._bot.auto_open_containers = DEFAULT_CONFIG["auto_open_containers"]
         self._parent._pixel_bridge.set_scan_region(DEFAULT_CONFIG["pixel_bar_region"])
         self._parent._save_cfg()
         self.destroy()
@@ -1253,8 +1212,6 @@ class App(tk.Tk):
         self._bot.stop_on_bags_full = self._cfg.get("stop_on_bags", False)
         self._bot.auto_calibrate = self._cfg.get("auto_calibrate", False)
         self._bot.auto_delete_junk = self._cfg.get("auto_delete_junk", False)
-        self._bot.container_key = self._cfg.get("container_key")
-        self._bot.auto_open_containers = self._cfg.get("auto_open_containers", False)
         self._bot._pixel_classifier = self._pc
         self._bot.start()
 
@@ -1404,8 +1361,6 @@ class App(tk.Tk):
         self._cfg["always_on_top"] = bool(self.attributes("-topmost"))
         self._cfg["sound_alerts"] = self._cfg.get("sound_alerts", False)
         self._cfg["pixel_bar_region"] = self._cfg.get("pixel_bar_region")
-        self._cfg["container_key"] = self._cfg.get("container_key")
-        self._cfg["auto_open_containers"] = self._cfg.get("auto_open_containers", False)
         if self._bot:
             self._cfg["stop_on_player"] = self._bot.stop_on_player_nearby
             self._cfg["stop_on_bags"] = self._bot.stop_on_bags_full

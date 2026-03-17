@@ -1,6 +1,6 @@
 # Laksefisk
 
-A World of Warcraft fishing bot for Windows. Python port of [FishingFun](https://github.com/julianperrott/FishingFun) by Julian Perrott.
+A World of Warcraft fishing bot for Windows. Inspired [FishingFun](https://github.com/julianperrott/FishingFun) by Julian Perrott.
 
 Detects the fishing bobber on screen using pixel colour analysis, watches for the bite (bobber dip), then moves the mouse to the bobber with human-like movement and right-clicks to loot.
 

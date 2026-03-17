@@ -61,7 +61,6 @@ class PixelBridgeData:
     say_flag: int = 0
     yell_flag: int = 0
     junk_on_cursor: bool = False
-    container_looted: bool = False
 
 
 def _colour_match(actual, expected):
@@ -326,7 +325,6 @@ class PixelBridge:
             say_flag=_read_bit(chat_g),
             yell_flag=_read_bit(chat_b),
             junk_on_cursor=p19_b > 128,
-            container_looted=p19_r > 128,
         )
 
         self._last_data = data

@@ -50,8 +50,6 @@ class LaksefiskBot:
         self.stop_on_bags_full: bool = False
         self.auto_calibrate: bool = False
         self.auto_delete_junk: bool = False
-        self.container_key: Optional[int] = None
-        self.auto_open_containers: bool = False
         self._junk_delete_count: int = 0
         self._dc_count: int = 0
         self._pixel_classifier = None  # set by GUI for auto-calibration
@@ -104,17 +102,6 @@ class LaksefiskBot:
         if not self.pixel_bridge:
             return None
         return self.pixel_bridge.read(allow_slow_scan=False)
-
-    def _try_open_container(self):
-        """Press container key if a container was just looted."""
-        if not self.auto_open_containers or not self.container_key or not self.pixel_bridge:
-            return
-        data = self._read_bridge()
-        if data and data.container_looted:
-            logger.info("Container looted — pressing key to open")
-            time.sleep(0.5)
-            wow_process.press_key(self.container_key)
-            time.sleep(1.0)
 
     def _try_delete_junk(self):
         """Press F12 to confirm the destroy popup shown by the addon."""
@@ -266,7 +253,6 @@ class LaksefiskBot:
         # Read loot from pixel bridge
         if self.pixel_bridge:
             self._read_loot_from_bridge()
-            self._try_open_container()
         # Quick poll for addon junk deletion — backup check happens during fishing
         if self.auto_delete_junk and self.pixel_bridge:
             t0 = time.time()

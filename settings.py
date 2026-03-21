@@ -25,8 +25,6 @@ from widgets import (
     SliderWithEntry,
     _bind_hover,
 )
-from wow_screen import WowScreen
-
 if TYPE_CHECKING:
     from gui import App
 
@@ -366,7 +364,7 @@ class SettingsPopup(tk.Toplevel):
     def _render_preview(self):
         """Capture screen and render matched pixels."""
         try:
-            img = WowScreen.get_bitmap()
+            img = self._parent._wow_screen.get_bitmap()
             pc = self._parent._pc
             iw, ih = img.size
             pixels = img.load()

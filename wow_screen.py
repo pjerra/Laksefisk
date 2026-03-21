@@ -1,8 +1,8 @@
+import ctypes
 import logging
 import time
 from typing import Optional, Tuple
 
-import win32con
 import win32gui
 import win32ui
 from PIL import Image
@@ -14,9 +14,15 @@ logger = logging.getLogger("Laksefisk")
 # Cache refresh interval (seconds)
 _HWND_CACHE_TTL = 5.0
 
+# PrintWindow flags
+_PW_CLIENTONLY = 0x00000001
+_PW_RENDERFULLCONTENT = 0x00000002
+
+_user32 = ctypes.windll.user32
+
 
 class WowScreen:
-    """Captures the WoW window client area via BitBlt."""
+    """Captures the WoW window client area via PrintWindow."""
 
     def __init__(self):
         self._hwnd: Optional[int] = None
@@ -41,27 +47,28 @@ class WowScreen:
         if not self._hwnd:
             return
         try:
-            # Client area origin in screen coords
             pt = win32gui.ClientToScreen(self._hwnd, (0, 0))
             self._client_origin = pt
-            # Client area size
             rect = win32gui.GetClientRect(self._hwnd)
             self._client_size = (rect[2], rect[3])
         except Exception:
             self._hwnd = None
 
-    def _bitblt_capture(self, x: int, y: int, w: int, h: int) -> Optional[Image.Image]:
-        """Capture a region of the WoW client area via BitBlt.
+    def _print_window_capture(self) -> Optional[Image.Image]:
+        """Capture the WoW client area via PrintWindow.
 
-        x, y are relative to the client area top-left.
+        Uses PW_RENDERFULLCONTENT to capture DirectX-rendered content.
         Returns an RGB PIL Image, or None on failure.
         """
         if not self._hwnd:
             return None
 
-        hwnd = self._hwnd  # capture before exception handler may clear it
+        hwnd = self._hwnd
+        w, h = self._client_size
+        if w <= 0 or h <= 0:
+            return None
+
         wnd_dc = None
-        src_dc = None
         save_dc = None
         bmp = None
         try:
@@ -73,7 +80,11 @@ class WowScreen:
             bmp.CreateCompatibleBitmap(src_dc, w, h)
             save_dc.SelectObject(bmp)
 
-            save_dc.BitBlt((0, 0), (w, h), src_dc, (x, y), win32con.SRCCOPY)
+            result = _user32.PrintWindow(hwnd, save_dc.GetSafeHdc(),
+                                         _PW_RENDERFULLCONTENT | _PW_CLIENTONLY)
+            if not result:
+                logger.warning("PrintWindow returned 0 (failed)")
+                return None
 
             bmp_info = bmp.GetInfo()
             bmp_bits = bmp.GetBitmapBits(True)
@@ -89,14 +100,12 @@ class WowScreen:
             )
             return img
         except Exception as e:
-            logger.warning(f"BitBlt capture failed: {e}")
+            logger.warning(f"PrintWindow capture failed: {e}")
             self._hwnd = None
             return None
         finally:
             if save_dc:
                 save_dc.DeleteDC()
-            if src_dc:
-                src_dc.DeleteDC()
             if bmp:
                 win32gui.DeleteObject(bmp.GetHandle())
             if wnd_dc and hwnd:
@@ -113,27 +122,24 @@ class WowScreen:
             raise RuntimeError("WoW window not found")
 
         self._update_geometry()
-        w, h = self._client_size
-        if w <= 0 or h <= 0:
-            raise RuntimeError("WoW client area has zero size (window minimized?)")
 
-        img = self._bitblt_capture(0, 0, w, h)
+        img = self._print_window_capture()
         if img is None:
             # Force HWND refresh and retry once
             self._refresh_hwnd(force=True)
             if not self._hwnd:
                 raise RuntimeError("WoW window not found after refresh")
             self._update_geometry()
-            w, h = self._client_size
-            img = self._bitblt_capture(0, 0, w, h)
+            img = self._print_window_capture()
             if img is None:
-                raise RuntimeError("BitBlt capture failed")
+                raise RuntimeError("PrintWindow capture failed")
 
         return img
 
     def get_region(self, x: int, y: int, w: int, h: int) -> Image.Image:
         """Capture a sub-region of the WoW client area.
 
+        Captures the full client area via PrintWindow, then crops.
         x, y, w, h are in client-area pixel coordinates.
         Raises RuntimeError if WoW window not found or capture fails.
         """
@@ -143,11 +149,14 @@ class WowScreen:
 
         self._update_geometry()
 
-        img = self._bitblt_capture(x, y, w, h)
+        img = self._print_window_capture()
         if img is None:
-            raise RuntimeError("BitBlt region capture failed")
+            raise RuntimeError("PrintWindow region capture failed")
 
-        return img
+        # Crop to requested region
+        cropped = img.crop((x, y, x + w, y + h))
+        img.close()
+        return cropped
 
     @staticmethod
     def get_color_at(pos: Tuple[int, int], bmp: Image.Image) -> Tuple[int, int, int]:

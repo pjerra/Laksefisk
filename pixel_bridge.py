@@ -22,8 +22,9 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-import mss
 from PIL import Image
+
+from wow_screen import WowScreen
 
 logger = logging.getLogger("Laksefisk")
 
@@ -171,22 +172,15 @@ def _decode_item_id(img, bar_x, bar_y, pixel_size, pixel_step):
 class PixelBridge:
     """Reads Laksefisk addon pixel data from the WoW screen."""
 
-    def __init__(self, scan_region: Optional[dict] = None):
+    def __init__(self, wow_screen: 'WowScreen', scan_region: Optional[dict] = None):
+        self._wow_screen = wow_screen
         self._item_lookup: dict = {}
         self._cached_region: Optional[dict] = None
         self._scan_region: Optional[dict] = scan_region
         self._cache_miss: int = 0
-        self._screen_w: int = 0
-        self._screen_h: int = 0
         self._last_data: Optional[PixelBridgeData] = None
         self._connected: bool = False
         self._consecutive_failures: int = 0
-
-        # Load screen dimensions
-        with mss.mss() as sct:
-            mon = sct.monitors[1]
-            self._screen_w = mon["width"]
-            self._screen_h = mon["height"]
 
         # Load item lookup
         lookup_path = os.path.join(os.path.dirname(__file__), "item_lookup.json")
@@ -338,16 +332,17 @@ class PixelBridge:
         return data
 
     def _capture_bottom_strip(self):
-        region = {
-            "left": 0,
-            "top": 0,
-            "width": self._screen_w,
-            "height": self._screen_h,
-        }
-        img = self._capture_region(region)
+        """Capture the bottom 250px of the WoW client area."""
+        cw, ch = self._wow_screen.client_size
+        y_start = max(0, ch - SCAN_HEIGHT)
+        h = ch - y_start
+        img = self._wow_screen.get_region(0, y_start, cw, h)
+        region = {"left": 0, "top": y_start, "width": cw, "height": h}
         return img, region
 
     def _capture_region(self, region):
-        with mss.mss() as sct:
-            screenshot = sct.grab(region)
-            return Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+        """Capture a region relative to the WoW client area."""
+        return self._wow_screen.get_region(
+            region["left"], region["top"],
+            region["width"], region["height"],
+        )

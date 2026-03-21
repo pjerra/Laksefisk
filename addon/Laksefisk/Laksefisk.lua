@@ -22,6 +22,7 @@ local PIXEL_GAP = 0
 local PIXEL_STEP = PIXEL_SIZE + PIXEL_GAP
 local NUM_PIXELS = 21       -- 0-7 control + 8-13 item ID + 14-16 bait + 17-19 hp + 20 enemy
 local BAR_Y_OFFSET = 120
+local ROW2_PIXELS = 13      -- settings pixels in row 2
 local ITEM_ID_START = 8     -- first pixel index for item ID
 local ITEM_ID_PIXELS = 6   -- 6 pixels × 3 bits = 18 bits
 local BAIT_START = 14
@@ -71,6 +72,7 @@ local enforceNameplates = false
 
 -- Pixel textures
 local pixels = {}
+local row2pixels = {}
 local barFrame
 
 ---------------------------------------------------------------------------
@@ -80,6 +82,12 @@ local barFrame
 local function SetPixelRaw(index, r, g, b)
     if pixels[index] then
         pixels[index]:SetColorTexture(r / 255, g / 255, b / 255, 1)
+    end
+end
+
+local function SetRow2PixelRaw(index, r, g, b)
+    if row2pixels[index] then
+        row2pixels[index]:SetColorTexture(r / 255, g / 255, b / 255, 1)
     end
 end
 
@@ -310,6 +318,9 @@ local function UpdateAllPixels()
     -- [20] Enemy nearby flag
     SetPixelRaw(20, 0, 0, enemyNearby and 255 or 0)
 
+    -- Row 2: [21] Version marker — green
+    SetRow2PixelRaw(0, 0, 255, 0)
+
 end
 
 ---------------------------------------------------------------------------
@@ -443,7 +454,7 @@ local function CreatePixelBar()
     local startX = (GetScreenWidth() - totalW) / 2
 
     barFrame = CreateFrame("Frame", "LaksefiskBar", UIParent)
-    barFrame:SetSize(totalW, PIXEL_SIZE)
+    barFrame:SetSize(totalW, PIXEL_SIZE * 2)
 
     -- Restore saved position or use default
     local saved = LaksefiskDB.barPos
@@ -481,9 +492,18 @@ local function CreatePixelBar()
     for i = 0, NUM_PIXELS - 1 do
         local px = barFrame:CreateTexture(nil, "OVERLAY")
         px:SetSize(PIXEL_SIZE, PIXEL_SIZE)
-        px:SetPoint("LEFT", barFrame, "LEFT", i * PIXEL_STEP, 0)
+        px:SetPoint("TOPLEFT", barFrame, "TOPLEFT", i * PIXEL_STEP, 0)
         px:SetColorTexture(0, 0, 0, 1)
         pixels[i] = px
+    end
+
+    -- Row 2: settings pixels (below row 1)
+    for i = 0, ROW2_PIXELS - 1 do
+        local px = barFrame:CreateTexture(nil, "OVERLAY")
+        px:SetSize(PIXEL_SIZE, PIXEL_SIZE)
+        px:SetPoint("TOPLEFT", barFrame, "TOPLEFT", i * PIXEL_STEP, -PIXEL_SIZE)
+        px:SetColorTexture(0, 0, 0, 1)
+        row2pixels[i] = px
     end
 
     SetPixelRaw(0, 255, 0, 255)
@@ -847,10 +867,10 @@ SlashCmdList["LAKSEFISK"] = function(msg)
         barFrame:EnableMouse(barMovable)
         if barMovable then
             -- Make bar bigger and visible while moving
-            barFrame:SetSize(NUM_PIXELS * PIXEL_STEP, 20)
+            barFrame:SetSize(NUM_PIXELS * PIXEL_STEP, PIXEL_SIZE * 2 + 10)
             print("|cff4FC3F7Laksefisk|r pixel bar |cff66FF66UNLOCKED|r — drag to move, then /lf move to lock")
         else
-            barFrame:SetSize(NUM_PIXELS * PIXEL_STEP, PIXEL_SIZE)
+            barFrame:SetSize(NUM_PIXELS * PIXEL_STEP, PIXEL_SIZE * 2)
             print("|cff4FC3F7Laksefisk|r pixel bar |cffFF6666LOCKED|r")
         end
 

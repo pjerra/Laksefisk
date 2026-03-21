@@ -14,6 +14,11 @@ Pixel layout (must match Laksefisk.lua v8):
   [14-16] Bait time remaining (seconds/5, 8-bit binary)
   [17-19] Player HP percent (8-bit binary)
   [20]  Enemy flag — B channel = enemy_nearby
+#
+# Row 2 (v2 addon only, detected by green version marker below row 1):
+#   [21]  Version marker — green (0, 255, 0)
+#   [22-33]  Settings (booleans, key indices, slider values)
+#   See spec: docs/superpowers/specs/2026-03-22-addon-settings-gui-design.md
 """
 
 import json
@@ -38,6 +43,7 @@ HP_START = 17
 # Sync colours
 SYNC1 = (255, 0, 255)  # magenta
 SYNC2 = (0, 255, 255)  # cyan
+VERSION_MARKER_V2 = (0, 255, 0)  # green — pixel 21, identifies v2 addon
 COLOUR_TOLERANCE = 20
 
 # How much of the screen bottom to scan (pixels from bottom edge)
@@ -225,6 +231,32 @@ def _decode_item_id(img, bar_x, bar_y, pixel_size, pixel_step):
     return value
 
 
+def _read_bits_from_channels(img, bar_x, bar_y, pixel_size, pixel_step,
+                              start_pixel, start_channel, num_bits, row_y_offset=0):
+    """Read num_bits from consecutive RGB channels starting at given pixel/channel.
+
+    Channels are numbered 0=R, 1=G, 2=B within each pixel, continuing across pixels.
+    row_y_offset is added to bar_y for reading row 2.
+    Returns integer value (MSB first).
+    """
+    bits = []
+    px = start_pixel
+    ch = start_channel
+    adjusted_y = bar_y + row_y_offset
+    for _ in range(num_bits):
+        r, g, b = _read_pixel(img, bar_x, adjusted_y, px, pixel_size, pixel_step)
+        channels = (r, g, b)
+        bits.append(_read_bit(channels[ch]))
+        ch += 1
+        if ch >= 3:
+            ch = 0
+            px += 1
+    value = 0
+    for bit in bits:
+        value = value * 2 + bit
+    return value
+
+
 class PixelBridge:
     """Reads Laksefisk addon pixel data from the WoW screen."""
 
@@ -331,7 +363,7 @@ class PixelBridge:
                     "left": max(0, strip_region["left"] + bar_x - pad),
                     "top": max(0, strip_region["top"] + bar_y - pad),
                     "width": bar_w + pad * 2,
-                    "height": px_size + pad * 2,
+                    "height": px_size * 2 + pad * 2,
                 }
                 # Re-capture just the bar region
                 img = self._capture_region(self._cached_region)
@@ -384,8 +416,97 @@ class PixelBridge:
         if data.enemy_nearby:
             logger.warning("Enemy player nearby")
 
+        # Check for v2 addon (row 2 settings)
+        row2_offset = px_size  # one block height below row 1
+        settings = self._read_settings_row(img, bar_x, bar_y, px_size, px_step, row2_offset)
+        if settings:
+            data.addon_version = 2
+            data.s_stop_friendly = settings["stop_friendly"]
+            data.s_stop_enemy = settings["stop_enemy"]
+            data.s_stop_bags = settings["stop_bags"]
+            data.s_auto_delete = settings["auto_delete"]
+            data.s_auto_calibrate = settings["auto_calibrate"]
+            data.s_sound_alerts = settings["sound_alerts"]
+            data.s_colour_mode = settings["colour_mode"]
+            data.s_skip_party = settings["skip_party"]
+            data.s_skip_guild = settings["skip_guild"]
+            data.s_skip_friends = settings["skip_friends"]
+            data.s_cast_key = settings["cast_key"]
+            data.s_lure_key = settings["lure_key"]
+            data.s_loot_wait_min = settings["loot_wait_min"]
+            data.s_loot_wait_max = settings["loot_wait_max"]
+            data.s_colour_multiplier = settings["colour_multiplier"]
+            data.s_colour_closeness_multiplier = settings["colour_closeness_multiplier"]
+
         self._last_data = data
         return data
+
+    def _read_settings_row(self, img, bar_x, bar_y, px_size, px_step, row_y_offset):
+        """Read settings from row 2 pixels. Returns dict of settings or None."""
+        # Check version marker at row 2, pixel index 0 (= pixel 21 in spec)
+        marker = _read_pixel(img, bar_x, bar_y + row_y_offset, 0, px_size, px_step)
+        if not _colour_match(marker, VERSION_MARKER_V2):
+            return None
+
+        def rp2(idx):
+            return _read_pixel(img, bar_x, bar_y + row_y_offset, idx, px_size, px_step)
+
+        def bits(start_pixel, start_channel, num_bits):
+            return _read_bits_from_channels(
+                img, bar_x, bar_y, px_size, px_step,
+                start_pixel, start_channel, num_bits,
+                row_y_offset=row_y_offset
+            )
+
+        # Pixel 22 (index 1 in row 2): booleans
+        p22_r, p22_g, p22_b = rp2(1)
+        # Pixel 23 (index 2): booleans
+        p23_r, p23_g, p23_b = rp2(2)
+        # Pixel 24 (index 3): colour_mode, skip_party, skip_guild
+        p24_r, p24_g, p24_b = rp2(3)
+        # Pixel 25 (index 4): skip_friends + cast_key bits 4,3
+        p25_r, _, _ = rp2(4)
+
+        # 5-bit cast_key: pixel 25 channels G,B + pixel 26 channels R,G,B
+        cast_key_idx = bits(4, 1, 5)  # row2 pixel index 4, channel G
+
+        # 5-bit lure_key: pixel 27 channels R,G,B + pixel 28 R,G
+        lure_key_idx = bits(6, 0, 5)  # row2 pixel index 6, channel R
+
+        # 4-bit wait_min: pixel 28 B + pixel 29 R,G,B
+        wait_min_raw = bits(7, 2, 4)
+
+        # 4-bit wait_max: pixel 30 R,G,B + pixel 31 R
+        wait_max_raw = bits(9, 0, 4)
+
+        # 4-bit colour_mult: pixel 31 G,B + pixel 32 R,G
+        col_mult_raw = bits(10, 1, 4)
+
+        # 4-bit colour_close: pixel 32 B + pixel 33 R,G,B
+        col_close_raw = bits(11, 2, 4)
+
+        # Decode key indices to VK codes
+        cast_vk = KEY_INDEX_TABLE[cast_key_idx] if cast_key_idx < len(KEY_INDEX_TABLE) else None
+        lure_vk = KEY_INDEX_TABLE[lure_key_idx] if lure_key_idx < len(KEY_INDEX_TABLE) else None
+
+        return {
+            "stop_friendly": p22_r > 128,
+            "stop_enemy": p22_g > 128,
+            "stop_bags": p22_b > 128,
+            "auto_delete": p23_r > 128,
+            "auto_calibrate": p23_g > 128,
+            "sound_alerts": p23_b > 128,
+            "colour_mode": "Blue" if p24_r > 128 else "Red",
+            "skip_party": p24_g > 128,
+            "skip_guild": p24_b > 128,
+            "skip_friends": p25_r > 128,
+            "cast_key": cast_vk,
+            "lure_key": lure_vk,
+            "loot_wait_min": round(wait_min_raw * 0.2, 1),
+            "loot_wait_max": round(wait_max_raw * 0.2, 1),
+            "colour_multiplier": round(col_mult_raw * 0.2, 1),
+            "colour_closeness_multiplier": round(col_close_raw * (5.0 / 15), 2),
+        }
 
     def _capture_bottom_strip(self):
         """Capture the bottom 250px of the WoW client area."""

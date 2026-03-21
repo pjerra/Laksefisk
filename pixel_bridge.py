@@ -43,6 +43,43 @@ COLOUR_TOLERANCE = 20
 # How much of the screen bottom to scan (pixels from bottom edge)
 SCAN_HEIGHT = 250
 
+# Shared key index → VK code table (must match Laksefisk.lua)
+# Index 0 = None/unset
+KEY_INDEX_TABLE = [
+    None,   # 0: None
+    0x31,   # 1: key "1"
+    0x32,   # 2: key "2"
+    0x33,   # 3: key "3"
+    0x34,   # 4: key "4"
+    0x35,   # 5: key "5"
+    0x36,   # 6: key "6"
+    0x37,   # 7: key "7"
+    0x38,   # 8: key "8"
+    0x39,   # 9: key "9"
+    0x30,   # 10: key "0"
+    0x70,   # 11: F1
+    0x71,   # 12: F2
+    0x72,   # 13: F3
+    0x73,   # 14: F4
+    0x74,   # 15: F5
+    0x75,   # 16: F6
+    0x76,   # 17: F7
+    0x77,   # 18: F8
+    0x78,   # 19: F9
+    0x79,   # 20: F10
+    0x7A,   # 21: F11
+    0x7B,   # 22: F12
+    0xBD,   # 23: -
+    0xBB,   # 24: =
+    0x60,   # 25: Num0
+    0x61,   # 26: Num1
+    0x6B,   # 27: Num+
+    0x6D,   # 28: Num-
+    0xC0,   # 29: `
+    0xDB,   # 30: [
+    0xDD,   # 31: ]
+]
+
 
 @dataclass
 class PixelBridgeData:

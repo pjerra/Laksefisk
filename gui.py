@@ -20,7 +20,6 @@ import winsound
 from tkinter import ttk
 from typing import Optional, Tuple
 
-import mss
 from PIL import Image, ImageTk
 
 import wow_process
@@ -83,11 +82,13 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        # mss DPI warm-up — MUST be before any geometry calls.
-        # mss.mss() changes Windows DPI awareness on first call, which would
-        # resize the tkinter window if called later.
-        with mss.mss():
-            pass
+        # DPI awareness — MUST be before any geometry calls.
+        # Without this, GetClientRect/ClientToScreen return wrong values on
+        # high-DPI displays, and the tkinter window may resize unexpectedly.
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+        except (AttributeError, OSError):
+            pass  # shcore not available on older Windows
 
         self._cfg = _load_config()
         self.title("Laksefisk")

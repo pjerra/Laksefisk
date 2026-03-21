@@ -25,23 +25,17 @@ from pixel_classifier import ClassifierMode, PixelClassifier
 from wow_process import _human_move_mouse
 from wow_screen import WowScreen
 
+# Module-level WowScreen instance for standalone capture functions
+_wow_screen = WowScreen()
+
 
 # ---------------------------------------------------------------------------
 # Screen capture
 # ---------------------------------------------------------------------------
 
 def capture_wow_region() -> Image.Image:
-    with mss.mss() as sct:
-        monitor = sct.monitors[1]
-        fw, fh = monitor["width"], monitor["height"]
-        region = {
-            "left": fw // 4,
-            "top": fh // 4,
-            "width": fw // 2,
-            "height": fh // 2 - 100,
-        }
-        shot = sct.grab(region)
-        return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    """Capture the WoW client area via WowScreen."""
+    return _wow_screen.get_bitmap()
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +134,8 @@ class CalibrationTestWindow(tk.Tk):
         self.configure(bg="#1e1e1e")
         self.attributes("-topmost", True)
         self.resizable(True, True)
+
+        self._ws = _wow_screen
 
         self._mode = ClassifierMode.Red
         self._auto_mode = False
@@ -417,7 +413,7 @@ class CalibrationTestWindow(tk.Tk):
             self.update()
 
             # Move mouse to cluster with human-like movement
-            screen_pos = WowScreen.get_screen_position_from_bitmap_position(center)
+            screen_pos = self._ws.get_screen_position_from_bitmap_position(center)
             current_pos = win32api.GetCursorPos()
             _human_move_mouse(current_pos, screen_pos)
             time.sleep(0.3)  # wait for tooltip to appear + addon to update pixel

@@ -21,7 +21,6 @@ import tkinter as tk
 from tkinter import ttk
 from typing import List, Tuple
 
-import mss
 from PIL import Image, ImageDraw, ImageTk
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -134,11 +133,11 @@ class SearchAreaPreview(tk.Tk):
         self._live_id = None
         self._cmap_visible = False
         self._overlay_visible = True
+        self._ws = WowScreen()
 
-        with mss.mss() as sct:
-            mon = sct.monitors[1]
-            self._screen_w = mon["width"]
-            self._screen_h = mon["height"]
+        # Get screen info via tkinter
+        self._screen_w = self.winfo_screenwidth()
+        self._screen_h = self.winfo_screenheight()
 
         self._region = {
             "left": self._screen_w // 4,
@@ -388,7 +387,7 @@ class SearchAreaPreview(tk.Tk):
             self._overlay.attributes("-alpha", 0)
             self._overlay.update_idletasks()
 
-        bmp = WowScreen.get_bitmap()
+        bmp = self._ws.get_bitmap()
 
         if self._overlay_visible:
             self._overlay.attributes("-alpha", 0.25)

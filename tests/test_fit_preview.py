@@ -14,7 +14,6 @@ from PIL import Image, ImageDraw, ImageTk
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import mss
 from wow_screen import WowScreen
 
 
@@ -41,9 +40,7 @@ def draw_reticle(img: Image.Image, point: tuple) -> Image.Image:
 
 class FitPreviewTest:
     def __init__(self):
-        # Warm up mss DPI context
-        with mss.mss():
-            pass
+        self._ws = WowScreen()
 
         self.root = tk.Tk()
         self.root.title("Fit Preview Test")
@@ -74,7 +71,7 @@ class FitPreviewTest:
             self._display(self._last_img)
 
     def _capture(self):
-        img = WowScreen.get_bitmap()
+        img = self._ws.get_bitmap()
         # Draw reticle at centre of image
         cx, cy = img.width // 2, img.height // 2
         img = draw_reticle(img, (cx, cy))

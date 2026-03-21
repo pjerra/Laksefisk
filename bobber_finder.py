@@ -33,8 +33,9 @@ class IBobberFinder(ABC):
 # ---------------------------------------------------------------------------
 
 class SearchBobberFinder(IBobberFinder):
-    def __init__(self, pixel_classifier: PixelClassifier):
+    def __init__(self, pixel_classifier: PixelClassifier, wow_screen: 'WowScreen'):
         self.pixel_classifier = pixel_classifier
+        self._wow_screen = wow_screen
         self._previous_location: Tuple[int, int] = EMPTY
         self._bitmap: Optional[Image.Image] = None
         self.bitmap_callbacks: List[Callable[[BobberBitmapEvent], None]] = []
@@ -57,7 +58,7 @@ class SearchBobberFinder(IBobberFinder):
         self._last_fail_reason = None
 
     def find(self) -> Tuple[int, int]:
-        self._bitmap = WowScreen.get_bitmap()
+        self._bitmap = self._wow_screen.get_bitmap()
 
         best = self._score_points(self._find_red_points())
 
@@ -87,7 +88,7 @@ class SearchBobberFinder(IBobberFinder):
 
         if self._previous_location == EMPTY:
             return EMPTY
-        return WowScreen.get_screen_position_from_bitmap_position(self._previous_location)
+        return self._wow_screen.get_screen_position_from_bitmap_position(self._previous_location)
 
     @property
     def last_raw_screen_position(self) -> Tuple[int, int]:
@@ -95,7 +96,7 @@ class SearchBobberFinder(IBobberFinder):
         if self._raw_y is None or self._previous_location == EMPTY:
             return EMPTY
         raw_bitmap = (self._previous_location[0], self._raw_y)
-        return WowScreen.get_screen_position_from_bitmap_position(raw_bitmap)
+        return self._wow_screen.get_screen_position_from_bitmap_position(raw_bitmap)
 
     def _stabilize(self, raw: Tuple[int, int]) -> Tuple[int, int]:
         rx, ry = raw
@@ -189,8 +190,9 @@ class SearchBobberFinder(IBobberFinder):
 class BobberColourPointFinder(IBobberFinder):
     TARGET_OFFSET = 15
 
-    def __init__(self, target_color: Tuple[int, int, int]):
+    def __init__(self, target_color: Tuple[int, int, int], wow_screen: 'WowScreen'):
         self.target_color = target_color
+        self._wow_screen = wow_screen
         self._bitmap: Optional[Image.Image] = None
         self.bitmap_callbacks: List[Callable[[BobberBitmapEvent], None]] = []
 
@@ -198,7 +200,7 @@ class BobberColourPointFinder(IBobberFinder):
         pass
 
     def find(self) -> Tuple[int, int]:
-        self._bitmap = WowScreen.get_bitmap()
+        self._bitmap = self._wow_screen.get_bitmap()
         bmp = self._bitmap
 
         tr, tg, tb = self.target_color
@@ -217,7 +219,7 @@ class BobberColourPointFinder(IBobberFinder):
                     event = BobberBitmapEvent(point=(x, y), bitmap=bmp)
                     for cb in self.bitmap_callbacks:
                         cb(event)
-                    return WowScreen.get_screen_position_from_bitmap_position((x, y))
+                    return self._wow_screen.get_screen_position_from_bitmap_position((x, y))
 
         event = BobberBitmapEvent(point=EMPTY, bitmap=bmp)
         for cb in self.bitmap_callbacks:

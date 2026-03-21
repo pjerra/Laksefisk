@@ -29,6 +29,7 @@ class WowScreen:
         self._hwnd_time: float = 0.0
         self._client_origin: Tuple[int, int] = (0, 0)
         self._client_size: Tuple[int, int] = (0, 0)
+        self._crop_offset: Tuple[int, int] = (0, 0)
 
     def _refresh_hwnd(self, force: bool = False):
         """Refresh cached HWND if stale or forced."""
@@ -112,8 +113,10 @@ class WowScreen:
                 win32gui.ReleaseDC(hwnd, wnd_dc)
 
     def get_bitmap(self) -> Image.Image:
-        """Capture the entire WoW client area.
+        """Capture the centre portion of the WoW client area for bobber search.
 
+        Crops to the centre half (same region as the original mss capture)
+        to avoid false positives from UI elements at the edges.
         Returns an RGB PIL Image.
         Raises RuntimeError if WoW window not found or capture fails.
         """
@@ -134,7 +137,19 @@ class WowScreen:
             if img is None:
                 raise RuntimeError("PrintWindow capture failed")
 
-        return img
+        # Crop to centre half (matching original mss region)
+        w, h = self._client_size
+        left = w // 4
+        top = h // 4
+        right = left + w // 2
+        bottom = top + h // 2 - 100
+        cropped = img.crop((left, top, right, bottom))
+        img.close()
+
+        # Store crop offset for coordinate mapping
+        self._crop_offset = (left, top)
+
+        return cropped
 
     def get_region(self, x: int, y: int, w: int, h: int) -> Image.Image:
         """Capture a sub-region of the WoW client area.
@@ -163,8 +178,15 @@ class WowScreen:
         return bmp.getpixel(pos)[:3]
 
     def get_screen_position_from_bitmap_position(self, pos: Tuple[int, int]) -> Tuple[int, int]:
-        """Convert bitmap (client-area) position to screen position."""
-        return (pos[0] + self._client_origin[0], pos[1] + self._client_origin[1])
+        """Convert bitmap position to screen position.
+
+        Accounts for both the crop offset (centre region within client area)
+        and the client area origin (client area within screen).
+        """
+        return (
+            pos[0] + self._crop_offset[0] + self._client_origin[0],
+            pos[1] + self._crop_offset[1] + self._client_origin[1],
+        )
 
     @property
     def client_size(self) -> Tuple[int, int]:

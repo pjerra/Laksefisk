@@ -38,7 +38,7 @@ def _mouse_event(flags: int, x: int, y: int):
     user32.mouse_event(flags, x, y, 0, 0)
 
 
-def _get_wow_hwnd() -> Optional[int]:
+def get_wow_hwnd() -> Optional[int]:
     names = {"wow", "wowclassic", "wow-64"}
     for proc in psutil.process_iter(["pid", "name"]):
         pname = proc.info["name"]
@@ -70,7 +70,7 @@ def is_wow_classic() -> bool:
 def press_key(vk_code: int):
     global _last_key
     _last_key = vk_code
-    hwnd = _get_wow_hwnd()
+    hwnd = get_wow_hwnd()
     if hwnd:
         win32api.PostMessage(hwnd, WM_KEYDOWN, vk_code, 0)
         time.sleep((50 + _rng.randint(0, 75)) / 1000)
@@ -151,7 +151,7 @@ def left_click_at(position: Tuple[int, int]):
 
 def right_click_mouse(position: Tuple[int, int]):
     """Move mouse to position with human-like movement, then right-click."""
-    hwnd = _get_wow_hwnd()
+    hwnd = get_wow_hwnd()
     if hwnd is None:
         return
 

@@ -5,6 +5,7 @@ from typing import Callable, List, Optional, Tuple
 
 from PIL import Image
 
+from debug_screenshots import save_debug_screenshot
 from models import BobberBitmapEvent
 from pixel_classifier import ClassifierMode, PixelClassifier
 from wow_screen import WowScreen
@@ -42,6 +43,8 @@ class SearchBobberFinder(IBobberFinder):
         self._warmup_xs: List[int] = []
         self._warmup_ys: List[int] = []
         self._raw_y: Optional[int] = None
+        self.save_debug_screenshots: bool = False
+        self._last_fail_reason: Optional[str] = None
 
     def reset(self):
         self._previous_location = EMPTY
@@ -50,6 +53,8 @@ class SearchBobberFinder(IBobberFinder):
         self._warmup_xs.clear()
         self._warmup_ys.clear()
         self._raw_y = None
+        self.save_debug_screenshots = False
+        self._last_fail_reason = None
 
     def find(self) -> Tuple[int, int]:
         self._bitmap = WowScreen.get_bitmap()
@@ -73,6 +78,9 @@ class SearchBobberFinder(IBobberFinder):
         )
         for cb in self.bitmap_callbacks:
             cb(event)
+
+        if self._previous_location == EMPTY and self.save_debug_screenshots and self._bitmap:
+            save_debug_screenshot(self._bitmap.copy(), self._last_fail_reason or "unknown")
 
         if self._bitmap:
             self._bitmap.close()
@@ -118,6 +126,7 @@ class SearchBobberFinder(IBobberFinder):
         return (self._locked_x, round(self._smooth_y))
 
     def _find_red_points(self) -> List[Tuple[int, int]]:
+        self._last_fail_reason = None
         points: List[Tuple[int, int]] = []
         bmp = self._bitmap
         has_prev = self._previous_location != EMPTY
@@ -149,7 +158,10 @@ class SearchBobberFinder(IBobberFinder):
 
         if len(points) > 1000:
             logger.error("Too much of the feather colour in this image — adjust colour configuration!")
+            self._last_fail_reason = "too_many"
             points.clear()
+        elif len(points) == 0:
+            self._last_fail_reason = "no_matches"
 
         return points
 

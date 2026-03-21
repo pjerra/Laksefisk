@@ -13,13 +13,14 @@
 --   [8..13]  Item ID — 18 bits binary (0-262143), MSB first across R,G,B
 --   [14..16] Bait time — seconds/5 as 8-bit binary (0=no bait, 255=1275s max) — pixel 16 B = mouseover bobber
 --   [17..19] Player HP — percent as 8-bit binary (0-100), pixel 19 B = junk on cursor
+--   [20]  Enemy flag  — R:0  G:0  B: enemy_nearby(255)/not(0)
 --
 -- The pixel bar is placed at the bottom-centre of the screen.
 
 local PIXEL_SIZE = 5
 local PIXEL_GAP = 0
 local PIXEL_STEP = PIXEL_SIZE + PIXEL_GAP
-local NUM_PIXELS = 20       -- 0-7 control + 8-13 item ID + 14-16 bait + 17-19 hp
+local NUM_PIXELS = 21       -- 0-7 control + 8-13 item ID + 14-16 bait + 17-19 hp + 20 enemy
 local BAR_Y_OFFSET = 120
 local ITEM_ID_START = 8     -- first pixel index for item ID
 local ITEM_ID_PIXELS = 6   -- 6 pixels × 3 bits = 18 bits
@@ -38,6 +39,11 @@ local isDead = false
 local isFishing = false
 local playerNearby = false
 local nearbyPlayers = {}     -- [name] = expiry time
+local enemyNearby = false
+local nearbyEnemies = {}     -- [name] = expiry time
+local originalEnemyNP = nil       -- saved nameplateShowEnemies cvar
+local originalEnemyNames = nil    -- saved UnitNameNPC cvar
+local fishingSessionActive = false
 local mouseoverBobber = false  -- true when GameTooltip shows "Fishing Bobber"
 local junkOnCursor = false
 -- Known openable fishing containers (clams, trunks, crates, scrollcases)
@@ -59,9 +65,9 @@ local openableContainers = {
 
 -- Saved variables (persists across sessions via LaksefiskDB)
 LaksefiskDB = LaksefiskDB or {}
-local printNearby = true
+local printNearby = false
 local scanNameplates = true
-local enforceNameplates = true
+local enforceNameplates = false
 
 -- Pixel textures
 local pixels = {}
@@ -110,9 +116,59 @@ end
 ---------------------------------------------------------------------------
 local NEARBY_TIMEOUT = 10    -- seconds before a player is considered "gone"
 
+local function EndFishingSession()
+    if fishingSessionActive then
+        if originalEnemyNP ~= nil then
+            SetCVar("nameplateShowEnemies", originalEnemyNP)
+        end
+        if originalEnemyNames ~= nil then
+            SetCVar("UnitNameNPC", originalEnemyNames)
+        end
+    end
+    fishingSessionActive = false
+    originalEnemyNP = nil
+    originalEnemyNames = nil
+    nearbyEnemies = {}
+    enemyNearby = false
+end
+
+local function IsWhitelisted(unit, name)
+    local db = LaksefiskDB or {}
+    local lowerName = string.lower(name)
+    -- Party/raid member
+    if db.skipParty and (UnitInParty(unit) or UnitInRaid(unit)) then return true end
+    -- Guild member
+    if db.skipGuild and IsInGuild() then
+        local numMembers = GetNumGuildMembers()
+        for i = 1, numMembers do
+            local gName = GetGuildRosterInfo(i)
+            if gName then
+                gName = string.match(gName, "^(.-)%-") or gName
+                if string.lower(gName) == lowerName then return true end
+            end
+        end
+    end
+    -- Friends list
+    if db.skipFriends then
+        local numFriends = C_FriendList.GetNumFriends()
+        for i = 1, numFriends do
+            local info = C_FriendList.GetFriendInfoByIndex(i)
+            if info and info.name and string.lower(info.name) == lowerName then return true end
+        end
+    end
+    -- Custom whitelist
+    if db.whitelist then
+        for _, wName in ipairs(db.whitelist) do
+            if string.lower(wName) == lowerName then return true end
+        end
+    end
+    return false
+end
+
 local function ScanNearbyPlayers()
     if not scanNameplates then
         playerNearby = false
+        enemyNearby = false
         return
     end
 
@@ -126,18 +182,25 @@ local function ScanNearbyPlayers()
 
     for _, plate in ipairs(plates) do
         local unit = plate.namePlateUnitToken
-        if unit and UnitIsPlayer(unit) and not UnitIsUnit(unit, "player") then
+        if UnitExists(unit) and UnitIsPlayer(unit) and not UnitIsUnit(unit, "player") then
             local name = UnitName(unit)
-            if name and not nearbyPlayers[name] and printNearby then
-                print("|cff4FC3F7Laksefisk|r |cffFF6666player nearby:|r " .. name)
-            end
-            if name then
-                nearbyPlayers[name] = now + NEARBY_TIMEOUT
+            if name and not IsWhitelisted(unit, name) then
+                if not UnitIsFriend("player", unit) then
+                    if not nearbyEnemies[name] and printNearby then
+                        print("|cff4FC3F7Laksefisk|r |cffFF3333enemy nearby:|r " .. name)
+                    end
+                    nearbyEnemies[name] = now + NEARBY_TIMEOUT
+                else
+                    if not nearbyPlayers[name] and printNearby then
+                        print("|cff4FC3F7Laksefisk|r |cffFFCC00player nearby:|r " .. name)
+                    end
+                    nearbyPlayers[name] = now + NEARBY_TIMEOUT
+                end
             end
         end
     end
 
-    -- Expire old entries
+    -- Expire old friendly entries
     local anyNearby = false
     for name, expiry in pairs(nearbyPlayers) do
         if now > expiry then
@@ -146,8 +209,17 @@ local function ScanNearbyPlayers()
             anyNearby = true
         end
     end
-
     playerNearby = anyNearby
+
+    -- Expire old enemy entries
+    enemyNearby = false
+    for name, expiry in pairs(nearbyEnemies) do
+        if now > expiry then
+            nearbyEnemies[name] = nil
+        else
+            enemyNearby = true
+        end
+    end
 end
 
 local function CheckMouseoverBobber()
@@ -234,6 +306,9 @@ local function UpdateAllPixels()
 
     -- Pixel 19: R = HP bit 1, G = HP bit 0, B = junk on cursor
     SetPixelRaw(HP_START + 2, Bit(hp, 1), Bit(hp, 0), junkOnCursor and 255 or 0)
+
+    -- [20] Enemy nearby flag
+    SetPixelRaw(20, 0, 0, enemyNearby and 255 or 0)
 
 end
 
@@ -436,6 +511,8 @@ eventFrame:RegisterEvent("CHAT_MSG_SAY")
 eventFrame:RegisterEvent("CHAT_MSG_YELL")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")
+eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
+eventFrame:RegisterEvent("PLAYER_LEAVING_WORLD")
 
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
@@ -443,6 +520,10 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         LaksefiskDB.deleteList = LaksefiskDB.deleteList or {}
         LaksefiskDB.debugDelete = LaksefiskDB.debugDelete or false
         if LaksefiskDB.autoOpenContainers == nil then LaksefiskDB.autoOpenContainers = true end
+        LaksefiskDB.whitelist = LaksefiskDB.whitelist or {}
+        if LaksefiskDB.skipParty == nil then LaksefiskDB.skipParty = false end
+        if LaksefiskDB.skipGuild == nil then LaksefiskDB.skipGuild = false end
+        if LaksefiskDB.skipFriends == nil then LaksefiskDB.skipFriends = false end
         CreatePixelBar()
         local nDel = #LaksefiskDB.deleteList
         local cStr = LaksefiskDB.autoOpenContainers and "ON" or "OFF"
@@ -453,6 +534,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "PLAYER_ALIVE" or event == "PLAYER_UNGHOST" then
         isDead = false
+        EndFishingSession()
 
     elseif event == "CHAT_MSG_LOOT" then
         local msg = ...
@@ -493,6 +575,15 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             if name and (name == "Fishing" or name == "Fiske") then
                 isFishing = true
                 castCounter = castCounter + 1
+                -- Save original settings on first cast
+                if not fishingSessionActive then
+                    originalEnemyNP = GetCVar("nameplateShowEnemies")
+                    originalEnemyNames = GetCVar("UnitNameNPC")
+                    fishingSessionActive = true
+                end
+                -- Disable enemy nameplates and NPC names during bobber watching
+                SetCVar("nameplateShowEnemies", "0")
+                SetCVar("UnitNameNPC", "0")
             end
         end
 
@@ -500,7 +591,29 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         local unit = ...
         if unit == "player" then
             isFishing = false
+            -- Restore NPC names between casts (next cast will turn them off again)
+            if fishingSessionActive and originalEnemyNames ~= nil then
+                SetCVar("UnitNameNPC", originalEnemyNames)
+            end
+            -- Briefly enable enemy nameplates for scan, then disable again
+            if fishingSessionActive then
+                SetCVar("nameplateShowEnemies", "1")
+                C_Timer.After(0.3, function()
+                    ScanNearbyPlayers()
+                    if fishingSessionActive then
+                        SetCVar("nameplateShowEnemies", "0")
+                    end
+                end)
+            end
         end
+
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        -- Entered combat — end fishing session, restore nameplates
+        EndFishingSession()
+
+    elseif event == "PLAYER_LEAVING_WORLD" then
+        -- Logout, /reload, disconnect — restore nameplates
+        EndFishingSession()
 
     end
 end)
@@ -568,10 +681,20 @@ SlashCmdList["LAKSEFISK"] = function(msg)
         print("  Player nearby: " .. tostring(playerNearby))
         local nCount = 0
         for name, _ in pairs(nearbyPlayers) do
-            print("    - " .. name)
+            print("    - |cffFFCC00" .. name .. "|r")
             nCount = nCount + 1
         end
         if nCount == 0 then print("    (none)") end
+        print("  Enemy nearby: " .. tostring(enemyNearby))
+        local eCount = 0
+        for name, _ in pairs(nearbyEnemies) do
+            print("    - |cffFF3333" .. name .. "|r")
+            eCount = eCount + 1
+        end
+        if eCount == 0 then print("    (none)") end
+        print("  Fishing session: " .. tostring(fishingSessionActive))
+        print("  Saved enemy NP cvar: " .. tostring(originalEnemyNP))
+        print("  Saved enemy names cvar: " .. tostring(originalEnemyNames))
         print("  Auto-delete list: " .. #(LaksefiskDB.deleteList or {}))
 
     elseif cmd == "test" then
@@ -662,6 +785,63 @@ SlashCmdList["LAKSEFISK"] = function(msg)
         LaksefiskDB.debugDelete = not LaksefiskDB.debugDelete
         print("|cff4FC3F7Laksefisk|r delete debug: " .. (LaksefiskDB.debugDelete and "ON" or "OFF"))
 
+    elseif string.sub(cmd, 1, 13) == "whitelist add" then
+        local name = string.match(msg, "whitelist add (.+)")
+        if name and name ~= "" then
+            name = string.match(name, "%[(.-)%]") or name
+            name = name:gsub("^%s+", ""):gsub("%s+$", "")
+            LaksefiskDB.whitelist = LaksefiskDB.whitelist or {}
+            table.insert(LaksefiskDB.whitelist, name)
+            print("|cff4FC3F7Laksefisk|r whitelist added: |cff66FF66" .. name .. "|r")
+        else
+            print("|cff4FC3F7Laksefisk|r usage: /lf whitelist add Player Name")
+        end
+
+    elseif string.sub(cmd, 1, 16) == "whitelist remove" then
+        local name = string.match(msg, "whitelist remove (.+)")
+        if name then
+            name = string.match(name, "%[(.-)%]") or name
+            name = name:gsub("^%s+", ""):gsub("%s+$", "")
+            local lower = string.lower(name)
+            LaksefiskDB.whitelist = LaksefiskDB.whitelist or {}
+            for i, wName in ipairs(LaksefiskDB.whitelist) do
+                if string.lower(wName) == lower then
+                    table.remove(LaksefiskDB.whitelist, i)
+                    print("|cff4FC3F7Laksefisk|r whitelist removed: " .. wName)
+                    return
+                end
+            end
+            print("|cff4FC3F7Laksefisk|r not found: " .. name)
+        end
+
+    elseif cmd == "whitelist list" then
+        LaksefiskDB.whitelist = LaksefiskDB.whitelist or {}
+        if #LaksefiskDB.whitelist == 0 then
+            print("|cff4FC3F7Laksefisk|r whitelist is empty (guild/party/friends auto-skipped)")
+        else
+            print("|cff4FC3F7Laksefisk|r whitelist:")
+            for i, name in ipairs(LaksefiskDB.whitelist) do
+                print("  " .. i .. ". |cff66FF66" .. name .. "|r")
+            end
+            print("  (guild/party/friends also auto-skipped)")
+        end
+
+    elseif cmd == "whitelist clear" then
+        LaksefiskDB.whitelist = {}
+        print("|cff4FC3F7Laksefisk|r whitelist cleared")
+
+    elseif cmd == "skip party" then
+        LaksefiskDB.skipParty = not LaksefiskDB.skipParty
+        print("|cff4FC3F7Laksefisk|r skip party/raid: " .. (LaksefiskDB.skipParty and "|cff66FF66ON|r" or "|cffFF6666OFF|r"))
+
+    elseif cmd == "skip guild" then
+        LaksefiskDB.skipGuild = not LaksefiskDB.skipGuild
+        print("|cff4FC3F7Laksefisk|r skip guild: " .. (LaksefiskDB.skipGuild and "|cff66FF66ON|r" or "|cffFF6666OFF|r"))
+
+    elseif cmd == "skip friends" then
+        LaksefiskDB.skipFriends = not LaksefiskDB.skipFriends
+        print("|cff4FC3F7Laksefisk|r skip friends: " .. (LaksefiskDB.skipFriends and "|cff66FF66ON|r" or "|cffFF6666OFF|r"))
+
     elseif cmd == "move" then
         barMovable = not barMovable
         barFrame:EnableMouse(barMovable)
@@ -701,6 +881,7 @@ SlashCmdList["LAKSEFISK"] = function(msg)
         print("  /lf whisper | say | yell  (fake chat)")
         print("  /lf nearby  (toggle nearby player chat alerts)")
         print("  /lf nameplates  (toggle auto-enable friendly nameplates)")
+
         print("  /lf dead  (toggle dead)")
         print("  /lf open  (open all containers in bags)")
         print("  /lf containers  (toggle auto-open containers)")
@@ -709,5 +890,9 @@ SlashCmdList["LAKSEFISK"] = function(msg)
         print("  /lf delete add <name>  (auto-delete fish)")
         print("  /lf delete remove <name>")
         print("  /lf delete list | clear | debug")
+        print("  /lf whitelist add <name>  (ignore player)")
+        print("  /lf whitelist remove <name>")
+        print("  /lf whitelist list | clear")
+        print("  /lf skip party | guild | friends  (toggle auto-skip)")
     end
 end

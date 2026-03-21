@@ -6,771 +6,73 @@ Layout: status bar → bobber view + amplitude overlay → fish list → log (ve
 
 from __future__ import annotations
 
-import json
+import ctypes
+import ctypes.wintypes
 import logging
 import os
 import queue
-import random
+import re
 import threading
 import time
 import tkinter as tk
 import webbrowser
 import winsound
-from collections import deque
 from tkinter import ttk
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import mss
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageTk
 
 import wow_process
 from bite_watcher import PositionBiteWatcher
 from bobber_calibration import sweep_calibrate
 from bobber_finder import SearchBobberFinder
+from constants import (
+    ACCENT,
+    ALERT,
+    BG_DARK,
+    LOOT_FILE,
+    PANEL_BG,
+    PANEL_DEEP,
+    STRIKE_VALUE,
+    TEXT_DIM,
+    TEXT_PRIMARY,
+    _load_config,
+    _save_config,
+    _SCRIPT_DIR,
+)
 from fish_tracker import FishTracker
 from fishing_bot import LaksefiskBot
 from models import BobberBitmapEvent, FishingAction, FishingEvent
 from pixel_bridge import PixelBridge
 from pixel_classifier import ClassifierMode, PixelClassifier
+from settings import SettingsPopup
+from widgets import (
+    AmplitudeOverlay,
+    FlyingFishOverlay,
+    _Tooltip,
+    _bind_hover,
+    draw_reticle,
+)
 from wow_screen import WowScreen
 
 logger = logging.getLogger("Laksefisk")
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(_SCRIPT_DIR, "config.json")
-LOOT_FILE = os.path.join(_SCRIPT_DIR, "loot.json")
-STRIKE_VALUE = 7
-
-DEFAULT_CONFIG = {
-    "cast_key": 0x34,
-    "lure_key": None,
-    "loot_wait_min": 0.5,
-    "loot_wait_max": 2.0,
-    "colour_mode": "Red",
-    "colour_multiplier": 0.5,
-    "colour_closeness_multiplier": 2.0,
-    "window_width": 200,
-    "window_height": 500,
-    "sash_positions": [120, 280],
-    "log_collapsed": False,
-    "bobber_zoom": 3.0,
-    "always_on_top": True,
-    "stop_on_player": False,
-    "stop_on_bags": False,
-    "auto_delete_junk": False,
-    "auto_calibrate": False,
-    "bite_sensitivity": 7,
-    "sound_alerts": False,
-    "pixel_bar_region": None,
-}
-
-# Dark theme
-BG_DARK = "#1a1a2e"
-PANEL_BG = "#16213e"
-PANEL_DEEP = "#0f3460"
-ACCENT = "#00d4aa"
-ALERT = "#e94560"
-TEXT_PRIMARY = "#cccccc"
-TEXT_DIM = "#555555"
-
-
-def _load_config() -> dict:
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE) as f:
-                cfg = json.load(f)
-            return {**DEFAULT_CONFIG, **cfg}
-    except Exception:
-        pass
-    return dict(DEFAULT_CONFIG)
-
-
-def _save_config(cfg: dict):
-    try:
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cfg, f, indent=2)
-    except Exception:
-        pass
-
 
 # ---------------------------------------------------------------------------
-# Reticle drawer
+# Queue-based logging handler
 # ---------------------------------------------------------------------------
 
-def draw_reticle(img: Image.Image, point: Tuple[int, int]) -> Image.Image:
-    draw = ImageDraw.Draw(img)
-    x, y = point
-    if x <= 0 and y <= 0:
-        return img
-    cs, rs = 15, 40
-    c = "white"
-    w = 2
-
-    def corner(cx, cy, dx, dy):
-        draw.line([(cx + dx, cy), (cx, cy), (cx, cy + dy)], fill=c, width=w)
-
-    corner(x - rs, y - rs,  cs,  cs)
-    corner(x - rs, y + rs,  cs, -cs)
-    corner(x + rs, y - rs, -cs,  cs)
-    corner(x + rs, y + rs, -cs, -cs)
-    draw.ellipse([x - 2, y - 2, x + 2, y + 2], fill=c)
-    return img
-
-
-# ---------------------------------------------------------------------------
-# Amplitude overlay (draws on bobber view canvas)
-# ---------------------------------------------------------------------------
-
-class AmplitudeOverlay:
-    """Draws amplitude bars as overlay on bottom 20% of a canvas."""
-
-    def __init__(self, canvas: tk.Canvas, strike_value: int = 7):
-        self._canvas = canvas
-        self._strike = strike_value
-        self._data: deque = deque(maxlen=120)
-        self._item_ids: list = []
-
-    def add(self, value: int):
-        self._data.append((time.time(), value))
-        self.draw()
-
-    def clear_chart(self):
-        self._data.clear()
-        self.draw()
-
-    def draw(self):
-        for item_id in self._item_ids:
-            self._canvas.delete(item_id)
-        self._item_ids.clear()
-
-        w = self._canvas.winfo_width()
-        h = self._canvas.winfo_height()
-        if w < 10 or h < 10:
-            return
-
-        overlay_h = int(h * 0.2)
-        overlay_top = h - overlay_h
-
-        bg_id = self._canvas.create_rectangle(
-            0, overlay_top, w, h,
-            fill=BG_DARK, stipple="gray50", outline=""
-        )
-        self._item_ids.append(bg_id)
-
-        if len(self._data) < 2:
-            return
-
-        now = time.time()
-        window = 20
-        y_min, y_max = -15, 10
-        y_range = y_max - y_min
-        bar_w = 3
-
-        for t, v in self._data:
-            elapsed = now - t
-            if elapsed > window:
-                continue
-            x = int(w - (elapsed / window) * w)
-            norm = (v - y_min) / y_range
-            bar_h = int(norm * overlay_h)
-            bar_h = max(1, min(bar_h, overlay_h))
-
-            colour = ALERT if v <= -self._strike else PANEL_DEEP
-            bar_id = self._canvas.create_rectangle(
-                x - bar_w, h - bar_h, x, h,
-                fill=colour, outline=""
-            )
-            self._item_ids.append(bar_id)
-
-        strike_norm = (-self._strike - y_min) / y_range
-        strike_y = overlay_top + overlay_h - int(strike_norm * overlay_h)
-        if overlay_top <= strike_y <= h:
-            line_id = self._canvas.create_line(
-                0, strike_y, w, strike_y,
-                fill=TEXT_DIM, dash=(4, 4)
-            )
-            self._item_ids.append(line_id)
-
-
-# ---------------------------------------------------------------------------
-# Flying fish overlay
-# ---------------------------------------------------------------------------
-
-class FlyingFishOverlay:
-    def __init__(self, canvas: tk.Canvas):
-        self.canvas = canvas
-        self._fish: List[dict] = []
-        self._running = False
-        self._rng = random.Random()
-        self._after_id: Optional[str] = None
-
-    def start(self):
-        self._stop()
-        w = self.canvas.winfo_width() or 500
-        h = self.canvas.winfo_height() or 200
-        self.canvas.delete("fish")
-        self._fish.clear()
-        for i in range(12):
-            x = self._rng.randint(0, w)
-            y = self._rng.randint(0, h)
-            fid = self.canvas.create_text(x, y, text="\U0001F41F", font=("Arial", 16), tags="fish")
-            self._fish.append({
-                "id": fid, "x": x, "y": y,
-                "sx": self._rng.randint(-3, 3),
-                "sy": self._rng.randint(1, 4),
-            })
-        self._running = True
-        self._tick()
-
-    def stop(self):
-        self._stop()
-        self.canvas.delete("fish")
-        self._fish.clear()
-
-    def _stop(self):
-        self._running = False
-        if self._after_id:
-            try:
-                self.canvas.after_cancel(self._after_id)
-            except Exception:
-                pass
-            self._after_id = None
-
-    def _tick(self):
-        if not self._running:
-            return
-        w = self.canvas.winfo_width() or 500
-        h = self.canvas.winfo_height() or 200
-        for f in self._fish:
-            f["x"] = (f["x"] + f["sx"]) % w
-            f["y"] = (f["y"] + f["sy"]) % h
-            self.canvas.coords(f["id"], f["x"], f["y"])
-        self._after_id = self.canvas.after(33, self._tick)
-
-
-# ---------------------------------------------------------------------------
-# Tooltip
-# ---------------------------------------------------------------------------
-
-class _Tooltip:
-    """Hover tooltip for any widget."""
-
-    def __init__(self, widget: tk.Widget, text: str):
-        self._widget = widget
-        self.text = text
-        self._tw = None
-        widget.bind("<Enter>", self._show)
-        widget.bind("<Leave>", self._hide)
-
-    def _show(self, _e):
-        x = self._widget.winfo_rootx() + 20
-        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
-        self._tw = tw = tk.Toplevel(self._widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_attributes("-topmost", True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tk.Label(tw, text=self.text, justify="left", bg="#ffffe0", fg="#333",
-                 relief="solid", bd=1, font=("Segoe UI", 8),
-                 padx=6, pady=4, wraplength=300).pack()
-
-    def _hide(self, _e):
-        if self._tw:
-            self._tw.destroy()
-            self._tw = None
-
-
-# ---------------------------------------------------------------------------
-# Settings Popup
-# ---------------------------------------------------------------------------
-
-class SettingsPopup(tk.Toplevel):
-    """Unified settings popup — dark themed."""
-
-    def __init__(self, parent: "App", on_change: callable):
-        super().__init__(parent)
-        self.transient(parent)
-        self.grab_set()
-        self.title("Settings")
-        self.configure(bg=BG_DARK)
-        self.geometry("420x600")
-        self.attributes("-topmost", True)
-        self.resizable(True, True)
-        self._parent = parent
-        self._on_change = on_change
-        self._build()
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-    def _on_close(self):
-        if hasattr(self, "_live_timer") and self._live_timer:
-            self.after_cancel(self._live_timer)
-        self.destroy()
-
-    def _build(self):
-        container = tk.Frame(self, bg=BG_DARK, padx=12, pady=8)
-        container.pack(fill="both", expand=True)
-
-        row = 0
-        # --- Cast Key ---
-        self._add_label(container, "Cast Key", row)
-        self._cast_var = tk.StringVar(value=self._parent._vk_to_label(self._parent._cast_key))
-        e = tk.Entry(
-            container, textvariable=self._cast_var, bg=PANEL_BG,
-            fg=TEXT_PRIMARY, font=("Consolas", 10), insertbackground=TEXT_PRIMARY,
-            relief="flat", width=8
-        )
-        e.grid(row=row, column=1, sticky="ew", pady=2, padx=(4, 0))
-        e.bind("<FocusIn>", lambda _: self._cast_var.set(""))
-        e.bind("<FocusOut>", lambda _: self._cast_var.set(
-            self._parent._vk_to_label(self._parent._cast_key)))
-        e.bind("<KeyRelease>", self._on_cast_key)
-        row += 1
-
-        # --- Lure Key ---
-        self._add_label(container, "Lure Key", row)
-        lure = self._parent._lure_key
-        self._lure_var = tk.StringVar(
-            value=self._parent._vk_to_label(lure) if lure else "-")
-        e = tk.Entry(
-            container, textvariable=self._lure_var, bg=PANEL_BG,
-            fg=TEXT_PRIMARY, font=("Consolas", 10), insertbackground=TEXT_PRIMARY,
-            relief="flat", width=8
-        )
-        e.grid(row=row, column=1, sticky="ew", pady=2, padx=(4, 0))
-        e.bind("<FocusIn>", lambda _: self._lure_var.set(""))
-        e.bind("<FocusOut>", lambda _: self._lure_var.set(
-            self._parent._vk_to_label(self._parent._lure_key) if self._parent._lure_key else "-"))
-        e.bind("<KeyRelease>", self._on_lure_key)
-        row += 1
-
-        # --- Loot Wait ---
-        self._add_label(container, "Loot Wait Min (s)", row)
-        self._loot_min_var = tk.DoubleVar(value=self._parent._loot_min)
-        tk.Scale(
-            container, variable=self._loot_min_var, from_=0.0, to=10.0,
-            resolution=0.1, orient="horizontal", bg=PANEL_BG, fg=TEXT_PRIMARY,
-            troughcolor=PANEL_DEEP, highlightthickness=0,
-            command=lambda _: self._on_loot_change()
-        ).grid(row=row, column=1, sticky="ew", pady=2, padx=(4, 0))
-        row += 1
-
-        self._add_label(container, "Loot Wait Max (s)", row)
-        self._loot_max_var = tk.DoubleVar(value=self._parent._loot_max)
-        tk.Scale(
-            container, variable=self._loot_max_var, from_=0.0, to=10.0,
-            resolution=0.1, orient="horizontal", bg=PANEL_BG, fg=TEXT_PRIMARY,
-            troughcolor=PANEL_DEEP, highlightthickness=0,
-            command=lambda _: self._on_loot_change()
-        ).grid(row=row, column=1, sticky="ew", pady=2, padx=(4, 0))
-        row += 1
-
-        # --- Bite Sensitivity ---
-        self._add_label(container, "Bite Sensitivity", row)
-        self._bite_var = tk.IntVar(value=self._parent._bite_sensitivity)
-        tk.Scale(
-            container, variable=self._bite_var, from_=1, to=20,
-            resolution=1, orient="horizontal", bg=PANEL_BG, fg=TEXT_PRIMARY,
-            troughcolor=PANEL_DEEP, highlightthickness=0,
-            command=lambda _: self._on_bite_change()
-        ).grid(row=row, column=1, sticky="ew", pady=2, padx=(4, 0))
-        row += 1
-
-        # --- Separator ---
-        ttk.Separator(container, orient="horizontal").grid(
-            row=row, column=0, columnspan=2, sticky="ew", pady=6
-        )
-        row += 1
-
-        # --- Colour Mode ---
-        self._add_label(container, "Colour Mode", row)
-        mode_frame = tk.Frame(container, bg=BG_DARK)
-        mode_frame.grid(row=row, column=1, sticky="w", pady=2, padx=(4, 0))
-        self._mode_var = tk.StringVar(
-            value="Red" if self._parent._pc.mode == ClassifierMode.Red else "Blue"
-        )
-        for mode in ("Red", "Blue"):
-            tk.Radiobutton(
-                mode_frame, text=mode, variable=self._mode_var, value=mode,
-                bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
-                activebackground=BG_DARK, activeforeground=ACCENT,
-                command=self._on_mode_change
-            ).pack(side="left", padx=(0, 8))
-        row += 1
-
-        # --- Colour Multiplier ---
-        self._add_label(container, "Colour Multiplier", row)
-        self._mult_var = tk.DoubleVar(value=self._parent._pc.colour_multiplier)
-        tk.Scale(
-            container, variable=self._mult_var, from_=0.0, to=3.0,
-            resolution=0.05, orient="horizontal", bg=PANEL_BG, fg=TEXT_PRIMARY,
-            troughcolor=PANEL_DEEP, highlightthickness=0,
-            command=lambda _: self._on_mult_change()
-        ).grid(row=row, column=1, sticky="ew", pady=2, padx=(4, 0))
-        row += 1
-
-        # --- Colour Closeness ---
-        self._add_label(container, "Colour Closeness", row)
-        self._close_var = tk.DoubleVar(
-            value=self._parent._pc.colour_closeness_multiplier
-        )
-        tk.Scale(
-            container, variable=self._close_var, from_=0.0, to=5.0,
-            resolution=0.1, orient="horizontal", bg=PANEL_BG, fg=TEXT_PRIMARY,
-            troughcolor=PANEL_DEEP, highlightthickness=0,
-            command=lambda _: self._on_close_change()
-        ).grid(row=row, column=1, sticky="ew", pady=2, padx=(4, 0))
-        row += 1
-
-        # --- Separator ---
-        ttk.Separator(container, orient="horizontal").grid(
-            row=row, column=0, columnspan=2, sticky="ew", pady=6
-        )
-        row += 1
-
-        # --- Checkboxes ---
-        self._auto_cal_var = tk.BooleanVar(
-            value=self._parent._cfg.get("auto_calibrate", False)
-        )
-        tk.Checkbutton(
-            container, text="Auto-calibrate on start", variable=self._auto_cal_var,
-            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
-            activebackground=BG_DARK, activeforeground=ACCENT,
-            command=self._on_auto_cal
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
-        row += 1
-
-        self._stop_player_var = tk.BooleanVar(
-            value=self._parent._cfg.get("stop_on_player", False)
-        )
-        tk.Checkbutton(
-            container, text="Stop on player nearby", variable=self._stop_player_var,
-            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
-            activebackground=BG_DARK, activeforeground=ACCENT,
-            command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
-        row += 1
-
-        self._stop_bags_var = tk.BooleanVar(
-            value=self._parent._cfg.get("stop_on_bags", False)
-        )
-        tk.Checkbutton(
-            container, text="Stop on bags full", variable=self._stop_bags_var,
-            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
-            activebackground=BG_DARK, activeforeground=ACCENT,
-            command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
-        row += 1
-
-        self._auto_delete_var = tk.BooleanVar(
-            value=self._parent._cfg.get("auto_delete_junk", False)
-        )
-        tk.Checkbutton(
-            container, text="Auto-delete junk", variable=self._auto_delete_var,
-            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
-            activebackground=BG_DARK, activeforeground=ACCENT,
-            command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
-        row += 1
-
-        self._topmost_var = tk.BooleanVar(
-            value=self._parent._cfg.get("always_on_top", True)
-        )
-        tk.Checkbutton(
-            container, text="Always on top", variable=self._topmost_var,
-            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
-            activebackground=BG_DARK, activeforeground=ACCENT,
-            command=self._on_topmost
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
-        row += 1
-
-        self._sound_var = tk.BooleanVar(
-            value=self._parent._cfg.get("sound_alerts", False)
-        )
-        tk.Checkbutton(
-            container, text="Sound alerts", variable=self._sound_var,
-            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
-            activebackground=BG_DARK, activeforeground=ACCENT,
-            command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
-        row += 1
-
-        # --- Pixel Bar Region ---
-        tk.Button(
-            container, text="Pixel Bar Region...", bg=PANEL_DEEP, fg=TEXT_PRIMARY,
-            font=("Consolas", 9), relief="flat", padx=8, pady=4,
-            command=self._on_pixel_bar_region, cursor="hand2"
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        row += 1
-
-        # --- Separator ---
-        ttk.Separator(container, orient="horizontal").grid(
-            row=row, column=0, columnspan=2, sticky="ew", pady=6
-        )
-        row += 1
-
-        # --- Reset ---
-        tk.Button(
-            container, text="Reset to Defaults", bg=ALERT, fg="white",
-            font=("Consolas", 9), relief="flat", padx=8, pady=4,
-            command=self._on_reset, cursor="hand2"
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(12, 0))
-        row += 1
-
-        # --- Separator ---
-        ttk.Separator(container, orient="horizontal").grid(
-            row=row, column=0, columnspan=2, sticky="ew", pady=6
-        )
-        row += 1
-
-        # --- Expandable: Colour Preview ---
-        self._preview_expanded = False
-        self._preview_btn = tk.Button(
-            container, text="\u25b6 Colour Preview", bg=BG_DARK, fg=TEXT_DIM,
-            font=("Consolas", 9), relief="flat", anchor="w",
-            command=self._toggle_preview, cursor="hand2"
-        )
-        self._preview_btn.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 0))
-        row += 1
-
-        self._preview_frame = tk.Frame(container, bg=BG_DARK)
-        self._preview_row = row
-
-        btn_row = tk.Frame(self._preview_frame, bg=BG_DARK)
-        btn_row.pack(fill="x", pady=4)
-        tk.Button(
-            btn_row, text="Capture", bg=PANEL_DEEP, fg=TEXT_PRIMARY,
-            font=("Consolas", 8), relief="flat", padx=6,
-            command=self._on_capture
-        ).pack(side="left", padx=(0, 4))
-        self._live_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
-            btn_row, text="Live", variable=self._live_var,
-            bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
-            command=self._toggle_live
-        ).pack(side="left")
-        self._match_label = tk.Label(
-            btn_row, text="Matches: \u2014", bg=BG_DARK, fg=TEXT_DIM,
-            font=("Consolas", 8)
-        )
-        self._match_label.pack(side="right")
-
-        self._preview_canvas = tk.Canvas(
-            self._preview_frame, bg="black", width=380, height=180,
-            highlightthickness=0
-        )
-        self._preview_canvas.pack(fill="both", expand=True)
-        self._preview_img_id = self._preview_canvas.create_image(0, 0, anchor="nw")
-        self._preview_photo = None
-        self._live_timer = None
-
-        container.columnconfigure(1, weight=1)
-
-    def _add_label(self, parent, text, row):
-        tk.Label(
-            parent, text=text, bg=BG_DARK, fg=TEXT_DIM,
-            font=("Consolas", 9), anchor="w"
-        ).grid(row=row, column=0, sticky="w", pady=2)
-
-    def _toggle_preview(self):
-        self._preview_expanded = not self._preview_expanded
-        if self._preview_expanded:
-            self._preview_btn.config(text="\u25bc Colour Preview")
-            self._preview_frame.grid(
-                row=self._preview_row, column=0, columnspan=2,
-                sticky="nsew", pady=4
-            )
-        else:
-            self._preview_btn.config(text="\u25b6 Colour Preview")
-            self._preview_frame.grid_forget()
-            if self._live_timer:
-                self.after_cancel(self._live_timer)
-                self._live_timer = None
-                self._live_var.set(False)
-
-    def _on_capture(self):
-        self._render_preview()
-
-    def _toggle_live(self):
-        if self._live_var.get():
-            self._live_update()
-        else:
-            if self._live_timer:
-                self.after_cancel(self._live_timer)
-                self._live_timer = None
-
-    def _live_update(self):
-        self._render_preview()
-        self._live_timer = self.after(500, self._live_update)
-
-    def _render_preview(self):
-        """Capture screen and render matched pixels."""
+class _QueueHandler(logging.Handler):
+    def __init__(self, q: queue.Queue):
+        super().__init__()
+        self._q = q
+
+    def emit(self, record: logging.LogRecord):
         try:
-            img = WowScreen.get_bitmap()
-            pc = self._parent._pc
-            iw, ih = img.size
-            pixels = img.load()
-            matches = 0
-            highlight = (0, 0, 255) if pc.mode == ClassifierMode.Blue else (255, 0, 0)
-            for y in range(0, ih, 2):
-                for x in range(0, iw, 2):
-                    r, g, b = pixels[x, y][:3]
-                    if pc.is_match(r, g, b):
-                        matches += 1
-                        pixels[x, y] = highlight
-            self._match_label.config(text=f"Matches: {matches}")
-            cw, ch = 380, 180
-            img = img.resize((cw, ch), Image.LANCZOS)
-            self._preview_photo = ImageTk.PhotoImage(img)
-            self._preview_canvas.itemconfig(self._preview_img_id, image=self._preview_photo)
-        except Exception as e:
-            self._match_label.config(text=f"Error: {e}")
-
-    def _on_cast_key(self, event):
-        vk = self._parent._keysym_to_vk(event.keysym)
-        if vk:
-            self._parent._cast_key = vk
-            self._cast_var.set(self._parent._vk_to_label(vk))
-            if self._parent._bot:
-                self._parent._bot.set_cast_key(vk)
-            self._parent._save_cfg()
-
-    def _on_lure_key(self, event):
-        vk = self._parent._keysym_to_vk(event.keysym)
-        if vk:
-            self._parent._lure_key = vk
-            self._lure_var.set(self._parent._vk_to_label(vk))
-            if self._parent._bot:
-                self._parent._bot.set_lure_key(vk)
-            self._parent._save_cfg()
-
-    def _on_loot_change(self):
-        self._parent._loot_min = self._loot_min_var.get()
-        self._parent._loot_max = max(
-            self._loot_max_var.get(), self._parent._loot_min
-        )
-        if self._parent._bot:
-            self._parent._bot.loot_wait_min = self._parent._loot_min
-            self._parent._bot.loot_wait_max = self._parent._loot_max
-        self._parent._save_cfg()
-
-    def _on_bite_change(self):
-        val = self._bite_var.get()
-        self._parent._bite_sensitivity = val
-        self._parent._bite_watcher.strike_value = val
-        self._parent._amplitude._strike = val
-        self._parent._save_cfg()
-
-    def _on_mode_change(self):
-        mode = ClassifierMode.Red if self._mode_var.get() == "Red" else ClassifierMode.Blue
-        self._parent._pc.mode = mode
-        self._parent._save_cfg()
-        self._on_change()
-
-    def _on_mult_change(self):
-        self._parent._pc.colour_multiplier = self._mult_var.get()
-        self._parent._save_cfg()
-        self._on_change()
-
-    def _on_close_change(self):
-        self._parent._pc.colour_closeness_multiplier = self._close_var.get()
-        self._parent._save_cfg()
-        self._on_change()
-
-    def _on_auto_cal(self):
-        self._parent._cfg["auto_calibrate"] = self._auto_cal_var.get()
-        if self._parent._bot:
-            self._parent._bot.auto_calibrate = self._auto_cal_var.get()
-        self._parent._save_cfg()
-
-    def _on_stop_conditions(self):
-        self._parent._cfg["stop_on_player"] = self._stop_player_var.get()
-        self._parent._cfg["stop_on_bags"] = self._stop_bags_var.get()
-        self._parent._cfg["auto_delete_junk"] = self._auto_delete_var.get()
-        self._parent._cfg["sound_alerts"] = self._sound_var.get()
-        if self._parent._bot:
-            self._parent._bot.stop_on_player_nearby = self._stop_player_var.get()
-            self._parent._bot.stop_on_bags_full = self._stop_bags_var.get()
-            self._parent._bot.auto_delete_junk = self._auto_delete_var.get()
-        self._parent._save_cfg()
-
-    def _on_pixel_bar_region(self):
-        """Open dialog to set/clear the pixel bar scan region."""
-        dlg = tk.Toplevel(self)
-        dlg.title("Pixel Bar Region")
-        dlg.configure(bg=BG_DARK)
-        dlg.geometry("260x200")
-        dlg.transient(self)
-        dlg.grab_set()
-
-        cur = self._parent._cfg.get("pixel_bar_region")
-        cached = self._parent._pixel_bridge.get_bar_position()
-        defaults = cur or cached or {"left": 0, "top": 0, "width": 200, "height": 20}
-
-        fields = {}
-        for i, key in enumerate(["left", "top", "width", "height"]):
-            tk.Label(dlg, text=key.capitalize(), bg=BG_DARK, fg=TEXT_DIM,
-                     font=("Consolas", 9)).grid(row=i, column=0, sticky="w", padx=8, pady=4)
-            var = tk.IntVar(value=defaults.get(key, 0))
-            tk.Entry(dlg, textvariable=var, width=8, bg=PANEL_DEEP, fg=TEXT_PRIMARY,
-                     font=("Consolas", 10), insertbackground=TEXT_PRIMARY
-                     ).grid(row=i, column=1, padx=8, pady=4)
-            fields[key] = var
-
-        def _apply():
-            region = {k: v.get() for k, v in fields.items()}
-            self._parent._cfg["pixel_bar_region"] = region
-            self._parent._pixel_bridge.set_scan_region(region)
-            self._parent._save_cfg()
-            dlg.destroy()
-
-        def _auto():
-            self._parent._cfg["pixel_bar_region"] = None
-            self._parent._pixel_bridge.set_scan_region(None)
-            self._parent._save_cfg()
-            dlg.destroy()
-
-        btn_row = tk.Frame(dlg, bg=BG_DARK)
-        btn_row.grid(row=4, column=0, columnspan=2, pady=12)
-        tk.Button(btn_row, text="Apply", bg=ACCENT, fg="black",
-                  font=("Consolas", 9), relief="flat", padx=8, pady=4,
-                  command=_apply).pack(side="left", padx=4)
-        tk.Button(btn_row, text="Auto-detect", bg=PANEL_DEEP, fg=TEXT_PRIMARY,
-                  font=("Consolas", 9), relief="flat", padx=8, pady=4,
-                  command=_auto).pack(side="left", padx=4)
-
-    def _on_topmost(self):
-        val = self._topmost_var.get()
-        self._parent._cfg["always_on_top"] = val
-        self._parent.attributes("-topmost", val)
-        self._parent._save_cfg()
-
-    def _on_reset(self):
-        for key, val in DEFAULT_CONFIG.items():
-            self._parent._cfg[key] = val
-        self._parent._cast_key = DEFAULT_CONFIG["cast_key"]
-        self._parent._lure_key = DEFAULT_CONFIG["lure_key"]
-        self._parent._loot_min = DEFAULT_CONFIG["loot_wait_min"]
-        self._parent._loot_max = DEFAULT_CONFIG["loot_wait_max"]
-        mode = ClassifierMode.Red if DEFAULT_CONFIG["colour_mode"] == "Red" else ClassifierMode.Blue
-        self._parent._pc.mode = mode
-        self._parent._pc.colour_multiplier = DEFAULT_CONFIG["colour_multiplier"]
-        self._parent._pc.colour_closeness_multiplier = DEFAULT_CONFIG["colour_closeness_multiplier"]
-        self._parent._bite_sensitivity = DEFAULT_CONFIG["bite_sensitivity"]
-        self._parent._bite_watcher.strike_value = DEFAULT_CONFIG["bite_sensitivity"]
-        self._parent._amplitude._strike = DEFAULT_CONFIG["bite_sensitivity"]
-        self._parent.attributes("-topmost", DEFAULT_CONFIG["always_on_top"])
-        if self._parent._bot:
-            self._parent._bot.set_cast_key(DEFAULT_CONFIG["cast_key"])
-            self._parent._bot.set_lure_key(DEFAULT_CONFIG["lure_key"])
-            self._parent._bot.loot_wait_min = DEFAULT_CONFIG["loot_wait_min"]
-            self._parent._bot.loot_wait_max = DEFAULT_CONFIG["loot_wait_max"]
-            self._parent._bot.stop_on_player_nearby = DEFAULT_CONFIG["stop_on_player"]
-            self._parent._bot.stop_on_bags_full = DEFAULT_CONFIG["stop_on_bags"]
-            self._parent._bot.auto_calibrate = DEFAULT_CONFIG["auto_calibrate"]
-            self._parent._bot.auto_delete_junk = DEFAULT_CONFIG["auto_delete_junk"]
-        self._parent._pixel_bridge.set_scan_region(DEFAULT_CONFIG["pixel_bar_region"])
-        self._parent._save_cfg()
-        self.destroy()
-        self._parent._on_settings()
+            self._q.put_nowait(self.format(record))
+        except queue.Full:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -842,21 +144,52 @@ class App(tk.Tk):
         self._setup_logging()
         self._poll()
         self._check_addon_status()
+        self._register_global_hotkeys()
 
+    # ------------------------------------------------------------------
+    # Global hotkeys (F6=toggle, F7=pause)
+    # ------------------------------------------------------------------
+
+    _HOTKEY_TOGGLE = 1
+    _HOTKEY_PAUSE = 2
+
+    def _register_global_hotkeys(self):
+        """Register F6/F7 as system-wide hotkeys via Win32 API."""
+        def _hotkey_thread():
+            user32 = ctypes.windll.user32
+            VK_F6 = 0x75
+            VK_F7 = 0x76
+            MOD_NONE = 0
+            try:
+                user32.RegisterHotKey(None, self._HOTKEY_TOGGLE, MOD_NONE, VK_F6)
+                user32.RegisterHotKey(None, self._HOTKEY_PAUSE, MOD_NONE, VK_F7)
+            except Exception:
+                return
+            msg = ctypes.wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+                if msg.message == 0x0312:  # WM_HOTKEY
+                    hotkey_id = msg.wParam
+                    if hotkey_id == self._HOTKEY_TOGGLE:
+                        self.after(0, self._on_toggle)
+                    elif hotkey_id == self._HOTKEY_PAUSE:
+                        self.after(0, self._on_pause_click)
+
+        self._hotkey_thread = threading.Thread(target=_hotkey_thread, daemon=True)
+        self._hotkey_thread.start()
 
     # ------------------------------------------------------------------
     # UI layout
     # ------------------------------------------------------------------
 
     def _build_ui(self):
-        """Build adaptive layout — vertical stack or horizontal row."""
+        """Build PanedWindow layout: status → bobber | fish | log (drag to resize)."""
         self._main_frame = tk.Frame(self, bg=BG_DARK)
         self._main_frame.pack(fill="both", expand=True)
 
         # Status bar (always at top)
         self._build_status_bar()
 
-        # PanedWindow for resizable panels
+        # PanedWindow for drag-resizable panels
         self._paned = ttk.PanedWindow(self._main_frame, orient="vertical")
         self._paned.pack(fill="both", expand=True, padx=2, pady=2)
 
@@ -865,31 +198,47 @@ class App(tk.Tk):
         self._build_fish_list()
         self._build_log_panel()
 
-        # Add panels to paned window
-        self._paned.add(self._bobber_frame, weight=3)
-        self._paned.add(self._fish_frame, weight=2)
+        # Add panels — weights set default proportions (40/20/40)
+        self._paned.add(self._bobber_frame, weight=2)
+        self._paned.add(self._fish_frame, weight=1)
         self._log_collapsed = self._cfg.get("log_collapsed", False)
         if not self._log_collapsed:
-            self._paned.add(self._log_frame, weight=1)
+            self._paned.add(self._log_frame, weight=2)
 
-        # Restore sash positions
+        # Restore saved sash positions
         self._restore_sash_positions()
 
         # Save config on close
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Session timer state
+        self._session_start = None
+        self._session_timer_id = None
+
     def _build_status_bar(self):
         bar = tk.Frame(self._main_frame, bg=BG_DARK, pady=4, padx=4)
         bar.pack(fill="x")
+        self._status_bar = bar
 
         # Play/stop toggle — canvas-drawn circle
         self._toggle_canvas = tk.Canvas(
             bar, width=32, height=32, bg=BG_DARK,
             highlightthickness=0, cursor="hand2"
         )
-        self._toggle_canvas.pack(side="left", padx=(0, 6))
+        self._toggle_canvas.pack(side="left", padx=(0, 4))
         self._toggle_canvas.bind("<Button-1>", self._on_toggle)
         self._draw_toggle()
+
+        # Pause button (canvas-drawn, initially disabled)
+        self._pause_canvas = tk.Canvas(
+            bar, width=24, height=24, bg=BG_DARK,
+            highlightthickness=0, cursor="hand2"
+        )
+        self._pause_canvas.pack(side="left", padx=(0, 6))
+        self._pause_canvas.bind("<Button-1>", self._on_pause_click)
+        self._is_paused = False
+        self._draw_pause()
+        _Tooltip(self._pause_canvas, "Pause/Resume (F7)")
 
         # Status text
         self._status_var = tk.StringVar(value="Idle")
@@ -914,6 +263,13 @@ class App(tk.Tk):
         # Spacer
         tk.Frame(bar, bg=BG_DARK).pack(side="left", fill="x", expand=True)
 
+        # Session timer
+        self._session_label = tk.Label(
+            bar, text="00:00:00", bg=BG_DARK, fg=TEXT_DIM,
+            font=("Consolas", 8)
+        )
+        self._session_label.pack(side="left", padx=(0, 4))
+
         # Cal button
         self._cal_btn = tk.Button(
             bar, text="Cal", bg=PANEL_DEEP, fg=TEXT_PRIMARY,
@@ -921,14 +277,27 @@ class App(tk.Tk):
             command=self._on_calibrate, cursor="hand2"
         )
         self._cal_btn.pack(side="left", padx=(0, 4))
-        _Tooltip(self._cal_btn, "Calibrate bobber detection")
+        _bind_hover(self._cal_btn, PANEL_DEEP, ACCENT, TEXT_PRIMARY, "black")
+        _Tooltip(self._cal_btn, "Calibrate bobber detection (F6 start/stop)")
 
         # Gear icon
-        tk.Button(
+        gear = tk.Button(
             bar, text="\u2699", bg=BG_DARK, fg=TEXT_DIM,
             font=("Consolas", 12), relief="flat", bd=0,
             command=self._on_settings, cursor="hand2"
-        ).pack(side="left")
+        )
+        gear.pack(side="left")
+        _bind_hover(gear, BG_DARK, PANEL_BG, TEXT_DIM, TEXT_PRIMARY)
+
+        # Compact mode toggle
+        self._compact_btn = tk.Button(
+            bar, text="\u229f", bg=BG_DARK, fg=TEXT_DIM,
+            font=("Consolas", 10), relief="flat", bd=0,
+            command=self._toggle_compact, cursor="hand2"
+        )
+        self._compact_btn.pack(side="left", padx=(2, 0))
+        _bind_hover(self._compact_btn, BG_DARK, PANEL_BG, TEXT_DIM, TEXT_PRIMARY)
+        _Tooltip(self._compact_btn, "Toggle compact mode")
 
     def _draw_toggle(self):
         self._toggle_canvas.delete("all")
@@ -941,11 +310,51 @@ class App(tk.Tk):
                 13, 8, 13, 24, 25, 16, fill=BG_DARK, outline=""
             )
 
+    def _draw_pause(self):
+        self._pause_canvas.delete("all")
+        if not self._is_running:
+            # Disabled look
+            self._pause_canvas.create_oval(1, 1, 23, 23, fill=PANEL_DEEP, outline="")
+            self._pause_canvas.create_rectangle(7, 6, 10, 18, fill=TEXT_DIM, outline="")
+            self._pause_canvas.create_rectangle(14, 6, 17, 18, fill=TEXT_DIM, outline="")
+        elif self._is_paused:
+            # Resume icon (green arrow)
+            self._pause_canvas.create_oval(1, 1, 23, 23, fill=ACCENT, outline="")
+            self._pause_canvas.create_polygon(
+                9, 6, 9, 18, 18, 12, fill=BG_DARK, outline=""
+            )
+        else:
+            # Pause icon (yellow bars)
+            self._pause_canvas.create_oval(1, 1, 23, 23, fill="#e0c030", outline="")
+            self._pause_canvas.create_rectangle(7, 6, 10, 18, fill=BG_DARK, outline="")
+            self._pause_canvas.create_rectangle(14, 6, 17, 18, fill=BG_DARK, outline="")
+
     def _on_toggle(self, _event=None):
         if self._is_running:
             self._on_stop()
         else:
             self._on_play()
+
+    def _on_pause_click(self, _event=None):
+        if not self._is_running or not self._bot:
+            return
+        if self._is_paused:
+            self._bot.resume()
+            self._is_paused = False
+            self._status_var.set("Running")
+        else:
+            self._bot.pause()
+            self._is_paused = True
+            self._status_var.set("Paused")
+        self._draw_pause()
+
+    def _update_session_timer(self):
+        if self._session_start is not None:
+            elapsed = int(time.time() - self._session_start)
+            h, r = divmod(elapsed, 3600)
+            m, s = divmod(r, 60)
+            self._session_label.config(text=f"{h:02d}:{m:02d}:{s:02d}", fg=TEXT_PRIMARY)
+        self._session_timer_id = self.after(1000, self._update_session_timer)
 
     def _build_bobber_view(self):
         self._bobber_frame = tk.Frame(self._paned, bg="black")
@@ -975,7 +384,7 @@ class App(tk.Tk):
         self._screenshot_canvas.bind("<Configure>", self._on_ss_resize)
 
     def _build_fish_list(self):
-        self._fish_frame = tk.Frame(self._paned, bg=PANEL_BG)
+        self._fish_frame = tk.Frame(self._paned, bg=PANEL_BG, height=50)
 
         # Header
         header = tk.Frame(self._fish_frame, bg=PANEL_BG, pady=2, padx=4)
@@ -988,11 +397,12 @@ class App(tk.Tk):
         self._fish_header_label.pack(side="left")
         self._fish_header_label.bind("<Button-1>", lambda _: webbrowser.open(
             os.path.join(_SCRIPT_DIR, "loot.html")))
-        tk.Button(
+        reset_btn = tk.Button(
             header, text="\u21bb", bg=PANEL_BG, fg=TEXT_DIM,
             font=("Consolas", 10), relief="flat", bd=0,
             command=self._on_reset_fish, cursor="hand2"
-        ).pack(side="right")
+        )
+        reset_btn.pack(side="right")
 
         # Fish text widget
         self._fish_text = tk.Text(
@@ -1002,12 +412,13 @@ class App(tk.Tk):
             selectbackground=PANEL_DEEP, insertbackground=TEXT_PRIMARY
         )
         self._fish_text.pack(fill="both", expand=True)
-        self._fish_text.tag_configure("bar", foreground=PANEL_DEEP)
+        self._fish_text.tag_configure("bar", foreground=ACCENT)
         self._fish_text.tag_configure("name", foreground=TEXT_PRIMARY)
         self._fish_text.tag_configure("count", foreground=TEXT_DIM)
+        self._fish_text.tag_configure("row_alt", background="#192844")
 
     def _build_log_panel(self):
-        # Log header sits outside the PanedWindow so it's always visible
+        # Log header sits outside PanedWindow so it's always visible
         self._log_header = tk.Frame(self, bg=PANEL_BG, pady=2, padx=4)
         self._log_header.pack(fill="x", side="bottom")
         tk.Label(
@@ -1023,8 +434,6 @@ class App(tk.Tk):
 
         # Log content frame goes inside PanedWindow
         self._log_frame = tk.Frame(self._paned, bg=PANEL_BG)
-
-        # Log text widget
         self._log_text = tk.Text(
             self._log_frame, bg=PANEL_BG, fg=TEXT_PRIMARY,
             font=("Consolas", 8), wrap="word", state="disabled",
@@ -1041,7 +450,7 @@ class App(tk.Tk):
         if self._log_collapsed:
             self._paned.forget(self._log_frame)
         else:
-            self._paned.add(self._log_frame, weight=1)
+            self._paned.add(self._log_frame, weight=2)
         self._save_cfg()
 
     # ------------------------------------------------------------------
@@ -1107,7 +516,7 @@ class App(tk.Tk):
         self._amplitude.draw()
 
     # ------------------------------------------------------------------
-    # Dock detection and layout switching
+    # Sash position save / restore
     # ------------------------------------------------------------------
 
     def _save_sash_positions(self):
@@ -1119,18 +528,19 @@ class App(tk.Tk):
             pass
 
     def _restore_sash_positions(self):
-        positions = self._cfg.get("sash_positions")
-        if positions:
-            self.after(50, lambda: self._apply_sash_positions(positions))
-
-    def _apply_sash_positions(self, positions):
-        try:
-            n = len(self._paned.panes()) - 1
-            for i, pos in enumerate(positions):
-                if i < n:
-                    self._paned.sashpos(i, pos)
-        except Exception:
-            pass
+        def _apply():
+            try:
+                self.update_idletasks()
+                h = self._paned.winfo_height()
+                n = len(self._paned.panes()) - 1
+                if h > 50 and n >= 2:
+                    self._paned.sashpos(0, int(h * 0.4))
+                    self._paned.sashpos(1, int(h * 0.6))
+            except Exception:
+                pass
+        # Apply at multiple delays to win against geometry manager
+        for delay in (100, 300, 600, 1000):
+            self.after(delay, _apply)
 
     # ------------------------------------------------------------------
     # Logging bridge
@@ -1168,9 +578,14 @@ class App(tk.Tk):
         if self._bot_thread and self._bot_thread.is_alive():
             return
         self._is_running = True
+        self._is_paused = False
         self._draw_toggle()
+        self._draw_pause()
         self._status_var.set("Starting...")
         self._amplitude.clear_chart()
+        # Start session timer
+        self._session_start = time.time()
+        self._update_session_timer()
         self._bot_thread = threading.Thread(target=self._bot_thread_func, daemon=True)
         self._bot_thread.start()
 
@@ -1208,10 +623,12 @@ class App(tk.Tk):
         self._bot.fishing_event_handler = self._on_fishing_event
         self._bot.fish_tracker = self._fish_tracker
         self._bot.pixel_bridge = self._pixel_bridge
-        self._bot.stop_on_player_nearby = self._cfg.get("stop_on_player", False)
+        self._bot.stop_on_friendly_nearby = self._cfg.get("stop_on_friendly", False)
+        self._bot.stop_on_enemy_nearby = self._cfg.get("stop_on_enemy", False)
         self._bot.stop_on_bags_full = self._cfg.get("stop_on_bags", False)
         self._bot.auto_calibrate = self._cfg.get("auto_calibrate", False)
         self._bot.auto_delete_junk = self._cfg.get("auto_delete_junk", False)
+        self._bot.debug_screenshots = self._cfg.get("debug_screenshots", False)
         self._bot._pixel_classifier = self._pc
         self._bot.start()
 
@@ -1220,10 +637,16 @@ class App(tk.Tk):
 
     def _on_bot_stopped(self):
         self._is_running = False
+        self._is_paused = False
         self._draw_toggle()
+        self._draw_pause()
         self._status_var.set("Idle")
         self._flying_fish.stop()
         self._hide_loot()
+        # Stop session timer (keep display showing final time)
+        if self._session_timer_id:
+            self.after_cancel(self._session_timer_id)
+            self._session_timer_id = None
 
     # ------------------------------------------------------------------
     # Fishing events
@@ -1267,13 +690,17 @@ class App(tk.Tk):
         self._fish_text.configure(state="normal")
         self._fish_text.delete("1.0", "end")
 
-        for name, count, pct in stats:
+        for i, (name, count, pct) in enumerate(stats):
             bar_len = int(pct / 5)
             bar = "\u2588" * bar_len
+            line_start = self._fish_text.index("end-1c")
             self._fish_text.insert("end", bar, "bar")
             self._fish_text.insert("end", f" {pct:4.1f}%  ", "count")
             self._fish_text.insert("end", f"{name}", "name")
             self._fish_text.insert("end", f"  x{count}\n", "count")
+            if i % 2 == 1:
+                line_end = self._fish_text.index("end-1c")
+                self._fish_text.tag_add("row_alt", line_start, line_end)
 
         self._fish_text.configure(state="disabled")
 
@@ -1358,21 +785,55 @@ class App(tk.Tk):
         self._cfg["colour_closeness_multiplier"] = self._pc.colour_closeness_multiplier
         self._cfg["bite_sensitivity"] = self._bite_sensitivity
         self._cfg["log_collapsed"] = self._log_collapsed
-        self._cfg["always_on_top"] = bool(self.attributes("-topmost"))
+        # Don't read live -topmost attribute — it's temporarily disabled
+        # while the settings popup is open.  Use the cfg value instead.
+        self._cfg.setdefault("always_on_top", True)
         self._cfg["sound_alerts"] = self._cfg.get("sound_alerts", False)
         self._cfg["pixel_bar_region"] = self._cfg.get("pixel_bar_region")
         if self._bot:
-            self._cfg["stop_on_player"] = self._bot.stop_on_player_nearby
+            self._cfg["stop_on_friendly"] = self._bot.stop_on_friendly_nearby
+            self._cfg["stop_on_enemy"] = self._bot.stop_on_enemy_nearby
             self._cfg["stop_on_bags"] = self._bot.stop_on_bags_full
             self._cfg["auto_calibrate"] = self._bot.auto_calibrate
             self._cfg["auto_delete_junk"] = self._bot.auto_delete_junk
-        self._cfg["window_width"] = self.winfo_width()
-        self._cfg["window_height"] = self.winfo_height()
-        self._save_sash_positions()
+        # Don't save compact-mode window size
+        if not (hasattr(self, "_compact_active") and self._compact_active):
+            self._cfg["window_width"] = self.winfo_width()
+            self._cfg["window_height"] = self.winfo_height()
+            self._save_sash_positions()
         _save_config(self._cfg)
 
     def _on_close(self):
-        self._save_cfg()
+        # Capture sash positions and geometry BEFORE anything gets destroyed
+        if hasattr(self, "_compact_active") and self._compact_active:
+            self._cfg["compact_mode"] = False
+            if hasattr(self, "_saved_geometry") and self._saved_geometry:
+                m = re.match(r"(\d+)x(\d+)", self._saved_geometry)
+                if m:
+                    self._cfg["window_width"] = int(m.group(1))
+                    self._cfg["window_height"] = int(m.group(2))
+        else:
+            self._cfg["window_width"] = self.winfo_width()
+            self._cfg["window_height"] = self.winfo_height()
+            self._save_sash_positions()
+        # Save all other config
+        self._cfg["cast_key"] = self._cast_key
+        self._cfg["lure_key"] = self._lure_key
+        self._cfg["loot_wait_min"] = self._loot_min
+        self._cfg["loot_wait_max"] = self._loot_max
+        self._cfg["colour_mode"] = "Red" if self._pc.mode == ClassifierMode.Red else "Blue"
+        self._cfg["colour_multiplier"] = self._pc.colour_multiplier
+        self._cfg["colour_closeness_multiplier"] = self._pc.colour_closeness_multiplier
+        self._cfg["bite_sensitivity"] = self._bite_sensitivity
+        self._cfg["log_collapsed"] = self._log_collapsed
+        self._cfg["always_on_top"] = self._cfg.get("always_on_top", True)
+        if self._bot:
+            self._cfg["stop_on_friendly"] = self._bot.stop_on_friendly_nearby
+            self._cfg["stop_on_enemy"] = self._bot.stop_on_enemy_nearby
+            self._cfg["stop_on_bags"] = self._bot.stop_on_bags_full
+            self._cfg["auto_calibrate"] = self._bot.auto_calibrate
+            self._cfg["auto_delete_junk"] = self._bot.auto_delete_junk
+        _save_config(self._cfg)
         if self._bot:
             self._bot.stop()
         self.destroy()
@@ -1380,21 +841,79 @@ class App(tk.Tk):
     def _on_settings(self):
         SettingsPopup(self, on_change=lambda: None)
 
+    # ------------------------------------------------------------------
+    # Compact mode
+    # ------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Queue-based logging handler
-# ---------------------------------------------------------------------------
+    def _toggle_compact(self):
+        is_compact = hasattr(self, "_compact_active") and self._compact_active
+        if is_compact:
+            self._exit_compact()
+        else:
+            self._enter_compact()
 
-class _QueueHandler(logging.Handler):
-    def __init__(self, q: queue.Queue):
-        super().__init__()
-        self._q = q
+    def _enter_compact(self):
+        self._compact_active = True
+        self._cfg["compact_mode"] = True
+        self._saved_geometry = self.geometry()
+        self._save_sash_positions()
 
-    def emit(self, record: logging.LogRecord):
-        try:
-            self._q.put_nowait(self.format(record))
-        except queue.Full:
-            pass
+        # Hide PanedWindow and log header
+        self._paned.pack_forget()
+        self._log_header.pack_forget()
+
+        # Build compact info frame
+        self._compact_frame = tk.Frame(self._main_frame, bg=BG_DARK)
+        self._compact_frame.pack(fill="x", padx=4)
+
+        # Fish count
+        total = self._fish_tracker.total if self._fish_tracker else 0
+        self._compact_fish_label = tk.Label(
+            self._compact_frame, text=f"{total} fish", bg=BG_DARK,
+            fg=TEXT_PRIMARY, font=("Consolas", 9)
+        )
+        self._compact_fish_label.pack(side="left", padx=(0, 8))
+
+        # Expand button
+        expand_btn = tk.Button(
+            self._compact_frame, text="\u25a1 Expand", bg=PANEL_DEEP, fg=TEXT_PRIMARY,
+            font=("Consolas", 8), relief="flat", padx=4, pady=1,
+            command=self._exit_compact, cursor="hand2"
+        )
+        expand_btn.pack(side="right")
+        _bind_hover(expand_btn, PANEL_DEEP, ACCENT, TEXT_PRIMARY, "black")
+
+        # Resize window — override minsize for compact
+        self.minsize(200, 50)
+        self.geometry("300x50")
+        self.resizable(False, False)
+
+        self._compact_btn.config(text="\u229e")
+        self._save_cfg()
+
+    def _exit_compact(self):
+        self._compact_active = False
+        self._cfg["compact_mode"] = False
+
+        # Destroy compact frame
+        if hasattr(self, "_compact_frame"):
+            self._compact_frame.destroy()
+
+        # Restore PanedWindow and log header
+        self._log_header.pack(fill="x", side="bottom")
+        self._paned.pack(fill="both", expand=True, padx=2, pady=2)
+        self._restore_sash_positions()
+
+        self.minsize(160, 300)
+        self.resizable(True, True)
+        if hasattr(self, "_saved_geometry") and self._saved_geometry:
+            self.geometry(self._saved_geometry)
+        else:
+            w = self._cfg.get("window_width", 200)
+            h = self._cfg.get("window_height", 500)
+            self.geometry(f"{w}x{h}")
+        self._compact_btn.config(text="\u229f")
+        self._save_cfg()
 
 
 # ---------------------------------------------------------------------------

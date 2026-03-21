@@ -13,6 +13,7 @@ Pixel layout (must match Laksefisk.lua v8):
   [8-13]  Item ID (18-bit binary, MSB first)
   [14-16] Bait time remaining (seconds/5, 8-bit binary)
   [17-19] Player HP percent (8-bit binary)
+  [20]  Enemy flag — B channel = enemy_nearby
 """
 
 import json
@@ -27,7 +28,7 @@ from PIL import Image
 logger = logging.getLogger("Laksefisk")
 
 # Must match Laksefisk.lua v8
-NUM_PIXELS = 20
+NUM_PIXELS = 21
 ITEM_ID_START = 8
 ITEM_ID_PIXELS = 6
 BAIT_START = 14
@@ -61,6 +62,7 @@ class PixelBridgeData:
     say_flag: int = 0
     yell_flag: int = 0
     junk_on_cursor: bool = False
+    enemy_nearby: bool = False
 
 
 def _colour_match(actual, expected):
@@ -307,6 +309,7 @@ class PixelBridge:
         bait_seconds = _decode_8bit(img, bar_x, bar_y, BAIT_START, px_size, px_step) * 5
         hp_percent = _decode_8bit(img, bar_x, bar_y, HP_START, px_size, px_step)
         p19_r, _, p19_b = rp(19)
+        _, _, p20_b = rp(20)
 
         data = PixelBridgeData(
             alive=st_r > 128,
@@ -325,7 +328,11 @@ class PixelBridge:
             say_flag=_read_bit(chat_g),
             yell_flag=_read_bit(chat_b),
             junk_on_cursor=p19_b > 128,
+            enemy_nearby=p20_b > 128,
         )
+
+        if data.enemy_nearby:
+            logger.warning("Enemy player nearby")
 
         self._last_data = data
         return data

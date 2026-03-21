@@ -1,5 +1,6 @@
 import logging
 import random
+import threading
 import time
 from typing import Callable, List, Optional, Tuple
 
@@ -46,7 +47,8 @@ class LaksefiskBot:
         self.fish_tracker = None  # set by GUI to enable loot tracking
         self.pixel_bridge: Optional[PixelBridge] = None  # set by GUI
         self._last_loot_parity: Optional[int] = None
-        self.stop_on_player_nearby: bool = False
+        self.stop_on_friendly_nearby: bool = False
+        self.stop_on_enemy_nearby: bool = False
         self.stop_on_bags_full: bool = False
         self.auto_calibrate: bool = False
         self.auto_delete_junk: bool = False
@@ -54,6 +56,9 @@ class LaksefiskBot:
         self._dc_count: int = 0
         self._pixel_classifier = None  # set by GUI for auto-calibration
         self._calibrated: bool = False  # sweep once at start
+        self.debug_screenshots: bool = False
+        self._paused = threading.Event()
+        self._paused.set()  # starts unpaused
         logger.info("Laksefisk Created.")
 
     def start(self):
@@ -63,6 +68,11 @@ class LaksefiskBot:
 
         while self._is_enabled:
             try:
+                # Wait if paused (blocks until resumed or stopped)
+                self._paused.wait()
+                if not self._is_enabled:
+                    break
+
                 # Check pixel bridge for stop conditions before casting
                 if self.pixel_bridge and self._check_stop_conditions():
                     continue
@@ -89,7 +99,16 @@ class LaksefiskBot:
 
     def stop(self):
         self._is_enabled = False
+        self._paused.set()  # unblock if paused so thread can exit
         logger.error("Bot is Stopping...")
+
+    def pause(self):
+        self._paused.clear()
+        logger.info("Bot paused.")
+
+    def resume(self):
+        self._paused.set()
+        logger.info("Bot resumed.")
 
     def set_cast_key(self, key: int):
         self.cast_key = key
@@ -165,13 +184,21 @@ class LaksefiskBot:
                         return True
                 return True
 
-            if self.stop_on_player_nearby and data.player_nearby:
-                logger.warning("Player nearby — pausing fishing")
+            friendly_triggered = self.stop_on_friendly_nearby and data.player_nearby
+            enemy_triggered = self.stop_on_enemy_nearby and data.enemy_nearby
+            if friendly_triggered or enemy_triggered:
+                who = "Enemy" if enemy_triggered else "Player"
+                logger.warning(f"{who} nearby — pausing fishing")
                 self.fishing_event_handler(FishingEvent(action=FishingAction.Cast))
                 while self._is_enabled:
                     time.sleep(3)
                     data = self._read_bridge()
-                    if data is None or not data.player_nearby:
+                    if data is None:
+                        logger.info("Player gone — resuming fishing")
+                        return True
+                    still_friendly = self.stop_on_friendly_nearby and data.player_nearby
+                    still_enemy = self.stop_on_enemy_nearby and data.enemy_nearby
+                    if not still_friendly and not still_enemy:
                         logger.info("Player gone — resuming fishing")
                         return True
                 return True
@@ -286,6 +313,7 @@ class LaksefiskBot:
             logger.warning(f"Pixel bridge read error: {e}")
 
     def _find_bobber(self) -> Tuple[int, int]:
+        self.bobber_finder.save_debug_screenshots = self.debug_screenshots
         timer = TimedAction(lambda a: logger.info(f"Waited {a.elapsed_secs}s for target"), 1000, 5)
         while True:
             target = self.bobber_finder.find()

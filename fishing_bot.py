@@ -118,6 +118,24 @@ class LaksefiskBot:
     def set_lure_key(self, key: Optional[int]):
         self.lure_key = key
 
+    def _apply_addon_settings(self, data):
+        """Apply settings from v2 addon pixel bridge data."""
+        if data.addon_version != 2:
+            return
+        self.stop_on_friendly_nearby = data.s_stop_friendly
+        self.stop_on_enemy_nearby = data.s_stop_enemy
+        self.stop_on_bags_full = data.s_stop_bags
+        self.auto_delete_junk = data.s_auto_delete
+        self.auto_calibrate = data.s_auto_calibrate
+        if data.s_cast_key is not None:
+            self.cast_key = data.s_cast_key
+        if data.s_lure_key is not None:
+            self.lure_key = data.s_lure_key
+        else:
+            self.lure_key = None
+        self.loot_wait_min = data.s_loot_wait_min
+        self.loot_wait_max = data.s_loot_wait_max
+
     def _read_bridge(self) -> "Optional[PixelBridgeData]":
         """Read pixel bridge, skipping slow scan if addon not found."""
         if not self.pixel_bridge:
@@ -162,6 +180,9 @@ class LaksefiskBot:
                         return True
                 return False
             self._dc_count = 0
+
+            # Apply addon settings if v2
+            self._apply_addon_settings(data)
 
             # Dead / ghost — stop immediately
             if not data.alive:

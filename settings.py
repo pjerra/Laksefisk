@@ -42,8 +42,9 @@ class SettingsPopup(tk.Toplevel):
         self.resizable(True, True)
         self._parent = parent
         self._on_change = on_change
-        # Disable parent topmost while settings is open to prevent focus fighting
-        self._parent.attributes("-topmost", False)
+        # Keep both windows on top so they don't disappear behind WoW
+        if self._parent._cfg.get("always_on_top", True):
+            self.attributes("-topmost", True)
         self.focus_force()
         self.lift()
         self._build()
@@ -52,9 +53,6 @@ class SettingsPopup(tk.Toplevel):
     def _on_close(self):
         if hasattr(self, "_live_timer") and self._live_timer:
             self.after_cancel(self._live_timer)
-        # Restore parent topmost if configured
-        if self._parent._cfg.get("always_on_top"):
-            self._parent.attributes("-topmost", True)
         self.destroy()
 
     def _build(self):

@@ -113,7 +113,7 @@ def _fallback_single_frame(precomputed, mult_values, close_values):
     return (opt_mult, opt_close)
 
 
-def sweep_calibrate(pixel_classifier: PixelClassifier) -> bool:
+def sweep_calibrate(pixel_classifier: PixelClassifier, wow_screen: 'WowScreen') -> bool:
     """Multi-frame stability calibration.
 
     Captures 6 frames, sweeps multiplier and closeness values,
@@ -128,7 +128,7 @@ def sweep_calibrate(pixel_classifier: PixelClassifier) -> bool:
     # Phase 0 — Capture 6 frames
     frames_data = []
     for i in range(6):
-        img = WowScreen.get_bitmap()
+        img = wow_screen.get_bitmap()
         pixels = _extract_pixels(img, step=2)
         frames_data.append(_precompute(pixels, is_red))
         img.close()
@@ -202,9 +202,9 @@ def sweep_calibrate(pixel_classifier: PixelClassifier) -> bool:
     return True
 
 
-def calibrate_now(pixel_classifier: PixelClassifier) -> Optional[dict]:
+def calibrate_now(pixel_classifier: PixelClassifier, wow_screen: 'WowScreen') -> Optional[dict]:
     """One-shot calibration (legacy). Calls sweep_calibrate internally."""
-    success = sweep_calibrate(pixel_classifier)
+    success = sweep_calibrate(pixel_classifier, wow_screen)
     if success:
         return {
             "colour_multiplier": pixel_classifier.colour_multiplier,

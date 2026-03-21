@@ -90,6 +90,9 @@ class App(tk.Tk):
         except (AttributeError, OSError):
             pass  # shcore not available on older Windows
 
+        # Screen capture
+        self._wow_screen = WowScreen()
+
         self._cfg = _load_config()
         self.title("Laksefisk")
         self.configure(bg=BG_DARK)
@@ -110,7 +113,7 @@ class App(tk.Tk):
         self._pc.colour_closeness_multiplier = self._cfg["colour_closeness_multiplier"]
         self._pc.mode = ClassifierMode.Red if self._cfg["colour_mode"] == "Red" else ClassifierMode.Blue
         self._pc.set_configuration(wow_process.is_wow_classic())
-        self._bobber_finder = SearchBobberFinder(self._pc)
+        self._bobber_finder = SearchBobberFinder(self._pc, self._wow_screen)
         self._bite_sensitivity = self._cfg.get("bite_sensitivity", STRIKE_VALUE)
         self._bite_watcher = PositionBiteWatcher(self._bite_sensitivity)
         self._bot: Optional[LaksefiskBot] = None
@@ -132,7 +135,7 @@ class App(tk.Tk):
 
         # Pixel bridge (replaces OCR for loot detection)
         scan_region = self._cfg.get("pixel_bar_region")
-        self._pixel_bridge = PixelBridge(scan_region=scan_region)
+        self._pixel_bridge = PixelBridge(self._wow_screen, scan_region=scan_region)
 
         # Sound alert state tracking
         self._prev_player_nearby = False
@@ -597,7 +600,7 @@ class App(tk.Tk):
     def _on_calibrate(self):
         """One-time sweep calibration from current screen."""
         def _run():
-            success = sweep_calibrate(self._pc)
+            success = sweep_calibrate(self._pc, self._wow_screen)
             if success:
                 self.after(0, lambda: self._status_var.set(
                     f"Cal: m={self._pc.colour_multiplier:.2f} "
@@ -617,6 +620,7 @@ class App(tk.Tk):
             bobber_finder=self._bobber_finder,
             bite_watcher=self._bite_watcher,
             cast_key=self._cast_key,
+            wow_screen=self._wow_screen,
             lure_key=self._lure_key,
             loot_wait_min=self._loot_min,
             loot_wait_max=self._loot_max,

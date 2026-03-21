@@ -30,6 +30,7 @@ class LaksefiskBot:
         bobber_finder: IBobberFinder,
         bite_watcher: IBiteWatcher,
         cast_key: int,
+        wow_screen=None,
         lure_key: Optional[int] = None,
         loot_wait_min: float = LOOT_WAIT_MIN,
         loot_wait_max: float = LOOT_WAIT_MAX,
@@ -37,6 +38,7 @@ class LaksefiskBot:
         self.bobber_finder = bobber_finder
         self.bite_watcher = bite_watcher
         self.cast_key = cast_key
+        self._wow_screen = wow_screen
         self.lure_key = lure_key
         self.loot_wait_min = loot_wait_min
         self.loot_wait_max = loot_wait_max
@@ -85,7 +87,7 @@ class LaksefiskBot:
                 wow_process.press_key(self.cast_key)
                 self._watch(2000)
                 if self.auto_calibrate and self._pixel_classifier and not self._calibrated:
-                    if sweep_calibrate(self._pixel_classifier):
+                    if sweep_calibrate(self._pixel_classifier, self._wow_screen):
                         self._calibrated = True
                         logger.info("Auto-calibration complete — using calibrated values")
                     else:

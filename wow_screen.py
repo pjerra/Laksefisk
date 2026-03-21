@@ -61,6 +61,7 @@ class WowScreen:
 
         hwnd = self._hwnd  # capture before exception handler may clear it
         wnd_dc = None
+        src_dc = None
         save_dc = None
         bmp = None
         try:
@@ -94,6 +95,8 @@ class WowScreen:
         finally:
             if save_dc:
                 save_dc.DeleteDC()
+            if src_dc:
+                src_dc.DeleteDC()
             if bmp:
                 win32gui.DeleteObject(bmp.GetHandle())
             if wnd_dc and hwnd:
@@ -157,4 +160,7 @@ class WowScreen:
     @property
     def client_size(self) -> Tuple[int, int]:
         """Current WoW client area size (width, height)."""
+        if self._client_size == (0, 0):
+            self._refresh_hwnd()
+            self._update_geometry()
         return self._client_size

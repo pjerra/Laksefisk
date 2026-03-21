@@ -101,6 +101,25 @@ class PixelBridgeData:
     yell_flag: int = 0
     junk_on_cursor: bool = False
     enemy_nearby: bool = False
+    # Addon version: 1 = old (21px), 2 = new (two-row, settings)
+    addon_version: int = 1
+    # Settings from addon (only populated when addon_version == 2)
+    s_stop_friendly: bool = False
+    s_stop_enemy: bool = False
+    s_stop_bags: bool = False
+    s_auto_delete: bool = False
+    s_auto_calibrate: bool = False
+    s_sound_alerts: bool = False
+    s_colour_mode: str = "Red"       # "Red" or "Blue"
+    s_skip_party: bool = False
+    s_skip_guild: bool = False
+    s_skip_friends: bool = False
+    s_cast_key: Optional[int] = None       # VK code or None
+    s_lure_key: Optional[int] = None       # VK code or None
+    s_loot_wait_min: float = 0.6     # seconds
+    s_loot_wait_max: float = 2.0     # seconds
+    s_colour_multiplier: float = 0.6
+    s_colour_closeness_multiplier: float = 2.0
 
 
 def _colour_match(actual, expected):

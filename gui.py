@@ -232,6 +232,7 @@ class App(tk.Tk):
         self._toggle_canvas.pack(side="left", padx=(0, 4))
         self._toggle_canvas.bind("<Button-1>", self._on_toggle)
         self._draw_toggle()
+        _Tooltip(self._toggle_canvas, "Start/stop fishing (F6)")
 
         # Pause button (canvas-drawn, initially disabled)
         self._pause_canvas = tk.Canvas(
@@ -258,6 +259,8 @@ class App(tk.Tk):
         )
         self._addon_canvas.pack(side="left", padx=(0, 2))
         self._addon_dot = self._addon_canvas.create_oval(1, 1, 13, 13, fill=TEXT_DIM)
+        _Tooltip(self._addon_canvas,
+                 "Addon connection status \u2014 green when pixel bridge is active")
         self._addon_label = tk.Label(
             bar, text="No addon", bg=BG_DARK,
             fg=TEXT_DIM, font=("Consolas", 8)
@@ -282,7 +285,7 @@ class App(tk.Tk):
         )
         self._cal_btn.pack(side="left", padx=(0, 4))
         _bind_hover(self._cal_btn, PANEL_DEEP, ACCENT, TEXT_PRIMARY, "black")
-        _Tooltip(self._cal_btn, "Calibrate bobber detection (F6 start/stop)")
+        _Tooltip(self._cal_btn, "Calibrate bobber colour detection")
 
         # Gear icon
         gear = tk.Button(
@@ -292,6 +295,7 @@ class App(tk.Tk):
         )
         gear.pack(side="left")
         _bind_hover(gear, BG_DARK, PANEL_BG, TEXT_DIM, TEXT_PRIMARY)
+        _Tooltip(gear, "Open settings")
 
         # Compact mode toggle
         self._compact_btn = tk.Button(
@@ -401,12 +405,14 @@ class App(tk.Tk):
         self._fish_header_label.pack(side="left")
         self._fish_header_label.bind("<Button-1>", lambda _: webbrowser.open(
             os.path.join(_SCRIPT_DIR, "loot.html")))
+        _Tooltip(self._fish_header_label, "Click to open loot report in browser")
         reset_btn = tk.Button(
             header, text="\u21bb", bg=PANEL_BG, fg=TEXT_DIM,
             font=("Consolas", 10), relief="flat", bd=0,
             command=self._on_reset_fish, cursor="hand2"
         )
         reset_btn.pack(side="right")
+        _Tooltip(reset_btn, "Reset fish count for this session")
 
         # Fish text widget
         self._fish_text = tk.Text(
@@ -435,6 +441,7 @@ class App(tk.Tk):
         )
         self._log_chevron.pack(side="right")
         self._log_chevron.bind("<Button-1>", self._toggle_log)
+        _Tooltip(self._log_chevron, "Collapse/expand log panel")
 
         # Log content frame goes inside PanedWindow
         self._log_frame = tk.Frame(self._paned, bg=PANEL_BG)

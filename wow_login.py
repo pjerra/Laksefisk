@@ -11,8 +11,6 @@ import random
 import time
 from typing import Optional, Tuple
 
-import win32gui
-
 import wow_process
 from pixel_bridge import PixelBridge
 from wow_screen import WowScreen

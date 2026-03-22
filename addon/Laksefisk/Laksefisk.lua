@@ -116,6 +116,20 @@ local function SetRow2PixelRaw(index, r, g, b)
     end
 end
 
+local function AddTooltip(widget, title, text)
+    widget:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(title, 1, 0.82, 0)
+        if text then
+            GameTooltip:AddLine(text, 1, 1, 1, true)
+        end
+        GameTooltip:Show()
+    end)
+    widget:HookScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+end
+
 local function Bit(value, pos)
     -- Returns 255 if bit at pos is set, 0 otherwise (pos 0 = LSB)
     return (math.floor(value / (2 ^ pos)) % 2 == 1) and 255 or 0
@@ -552,7 +566,7 @@ end)
 -- Settings panel GUI
 ---------------------------------------------------------------------------
 
-local function CreateCheckbox(parent, x, y, label, dbKey, onChange)
+local function CreateCheckbox(parent, x, y, label, dbKey, onChange, tooltip)
     local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
     cb:SetPoint("TOPLEFT", x, y)
     cb:SetSize(22, 22)
@@ -565,10 +579,11 @@ local function CreateCheckbox(parent, x, y, label, dbKey, onChange)
         if onChange then onChange(LaksefiskDB[dbKey]) end
     end)
     cb.dbKey = dbKey
+    if tooltip then AddTooltip(cb, label, tooltip) end
     return cb
 end
 
-local function CreateSettingSlider(parent, x, y, label, dbKey, minVal, maxVal, step, displayFn)
+local function CreateSettingSlider(parent, x, y, label, dbKey, minVal, maxVal, step, displayFn, tooltip)
     local container = CreateFrame("Frame", nil, parent)
     container:SetPoint("TOPLEFT", x, y)
     container:SetSize(200, 36)
@@ -600,10 +615,11 @@ local function CreateSettingSlider(parent, x, y, label, dbKey, minVal, maxVal, s
 
     container.slider = slider
     container.dbKey = dbKey
+    if tooltip then AddTooltip(container, label, tooltip) end
     return container
 end
 
-local function CreateKeyCaptureButton(parent, x, y, label, dbKey)
+local function CreateKeyCaptureButton(parent, x, y, label, dbKey, tooltip)
     local container = CreateFrame("Frame", nil, parent)
     container:SetPoint("TOPLEFT", x, y)
     container:SetSize(200, 20)
@@ -645,6 +661,7 @@ local function CreateKeyCaptureButton(parent, x, y, label, dbKey)
 
     container.btn = btn
     container.dbKey = dbKey
+    if tooltip then AddTooltip(container, label, tooltip) end
     return container
 end
 
@@ -815,11 +832,14 @@ local function CreateSettingsPanel()
     sectionLabel:SetText("|cffff8000STOP CONDITIONS|r")
     yOff = yOff - 16
 
-    CreateCheckbox(generalTab, 0, yOff, "Stop on friendly player", "stopFriendly")
+    CreateCheckbox(generalTab, 0, yOff, "Stop on friendly player", "stopFriendly", nil,
+        "Stop fishing when a friendly player is detected nearby")
     yOff = yOff - 22
-    CreateCheckbox(generalTab, 0, yOff, "Stop on enemy player", "stopEnemy")
+    CreateCheckbox(generalTab, 0, yOff, "Stop on enemy player", "stopEnemy", nil,
+        "Stop fishing when an enemy player is detected nearby")
     yOff = yOff - 22
-    CreateCheckbox(generalTab, 0, yOff, "Stop on bags full", "stopBags")
+    CreateCheckbox(generalTab, 0, yOff, "Stop on bags full", "stopBags", nil,
+        "Stop fishing when bags are full")
     yOff = yOff - 28
 
     local featLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -827,11 +847,14 @@ local function CreateSettingsPanel()
     featLabel:SetText("|cffff8000FEATURES|r")
     yOff = yOff - 16
 
-    CreateCheckbox(generalTab, 0, yOff, "Auto-delete junk", "autoDelete")
+    CreateCheckbox(generalTab, 0, yOff, "Auto-delete junk", "autoDelete", nil,
+        "Automatically delete items on the junk list")
     yOff = yOff - 22
-    CreateCheckbox(generalTab, 0, yOff, "Auto-calibrate", "autoCalibrate")
+    CreateCheckbox(generalTab, 0, yOff, "Auto-calibrate", "autoCalibrate", nil,
+        "Automatically calibrate bobber detection at session start")
     yOff = yOff - 22
-    CreateCheckbox(generalTab, 0, yOff, "Sound alerts", "soundAlerts")
+    CreateCheckbox(generalTab, 0, yOff, "Sound alerts", "soundAlerts", nil,
+        "Play sounds for important events")
     yOff = yOff - 28
 
     local keysLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -839,9 +862,11 @@ local function CreateSettingsPanel()
     keysLabel:SetText("|cffff8000KEYS|r")
     yOff = yOff - 16
 
-    CreateKeyCaptureButton(generalTab, 0, yOff, "Cast key", "castKeyIndex")
+    CreateKeyCaptureButton(generalTab, 0, yOff, "Cast key", "castKeyIndex",
+        "Click then press a key to set the cast keybind")
     yOff = yOff - 24
-    CreateKeyCaptureButton(generalTab, 0, yOff, "Lure key", "lureKeyIndex")
+    CreateKeyCaptureButton(generalTab, 0, yOff, "Lure key", "lureKeyIndex",
+        "Click then press a key to set the lure keybind")
     yOff = yOff - 32
 
     local timingLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -850,10 +875,12 @@ local function CreateSettingsPanel()
     yOff = yOff - 16
 
     CreateSettingSlider(generalTab, 0, yOff, "Loot wait min", "lootWaitMin", 0, 15, 1,
-        function(v) return string.format("%.1fs", v * 0.2) end)
+        function(v) return string.format("%.1fs", v * 0.2) end,
+        "Minimum random delay before looting")
     yOff = yOff - 40
     CreateSettingSlider(generalTab, 0, yOff, "Loot wait max", "lootWaitMax", 0, 15, 1,
-        function(v) return string.format("%.1fs", v * 0.2) end)
+        function(v) return string.format("%.1fs", v * 0.2) end,
+        "Maximum random delay before looting")
 
     -- Move bar button at bottom of General tab
     local moveBarBtn = CreateFrame("Button", nil, generalTab, "UIPanelButtonTemplate")
@@ -863,6 +890,7 @@ local function CreateSettingsPanel()
     moveBarBtn:SetScript("OnClick", function()
         SlashCmdList["LAKSEFISK"]("move")
     end)
+    AddTooltip(moveBarBtn, "Move Bar", "Drag the pixel bar to a new position")
 
     -- Reset defaults button
     local resetBtn = CreateFrame("Button", nil, generalTab, "UIPanelButtonTemplate")
@@ -893,6 +921,7 @@ local function CreateSettingsPanel()
             settingsFrame:Show()
         end
     end)
+    AddTooltip(resetBtn, "Reset Defaults", "Reset all settings to defaults")
 
     -- Lists tab content
     listsTab = CreateFrame("Frame", nil, contentArea)
@@ -905,9 +934,12 @@ local function CreateSettingsPanel()
     skipLabel:SetPoint("TOPLEFT", 0, -202)
     skipLabel:SetText("|cffff8000AUTO-SKIP (don't pause for)|r")
 
-    CreateCheckbox(listsTab, 0, -218, "Party members", "skipParty")
-    CreateCheckbox(listsTab, 0, -240, "Guild members", "skipGuild")
-    CreateCheckbox(listsTab, 0, -262, "Friends list", "skipFriends")
+    CreateCheckbox(listsTab, 0, -218, "Party members", "skipParty", nil,
+        "Don't pause for party members")
+    CreateCheckbox(listsTab, 0, -240, "Guild members", "skipGuild", nil,
+        "Don't pause for guild members")
+    CreateCheckbox(listsTab, 0, -262, "Friends list", "skipFriends", nil,
+        "Don't pause for players on your friends list")
 
     -- Detection tab content
     detectionTab = CreateFrame("Frame", nil, contentArea)
@@ -945,12 +977,16 @@ local function CreateSettingsPanel()
         LaksefiskDB.colourMode = 1
         UpdateRadios()
     end)
+    AddTooltip(redBtn, "Red", "Red for standard bobbers")
+    AddTooltip(blueBtn, "Blue", "Blue for special/blue bobbers")
 
     CreateSettingSlider(detectionTab, 0, -44, "Colour multiplier", "colourMult", 0, 15, 1,
-        function(v) return string.format("%.1f", v * 0.2) end)
+        function(v) return string.format("%.1f", v * 0.2) end,
+        "Scales bobber colour detection range")
 
     CreateSettingSlider(detectionTab, 0, -88, "Colour closeness", "colourClose", 0, 15, 1,
-        function(v) return string.format("%.1f", v * (5.0 / 15)) end)
+        function(v) return string.format("%.1f", v * (5.0 / 15)) end,
+        "How close a pixel must match the target bobber colour")
 
     settingsFrame:Hide()
 
@@ -1005,6 +1041,7 @@ local function CreateStatusBar()
     statusFrame.title = statusFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     statusFrame.title:SetPoint("TOPLEFT", 8, -6)
     statusFrame.title:SetText("|cffff8000Laksefisk|r")
+    AddTooltip(statusFrame, "Laksefisk", "Drag to move. /lf status to toggle")
 
     -- State label
     statusFrame.state = statusFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")

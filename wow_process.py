@@ -15,6 +15,7 @@ logger = logging.getLogger("Laksefisk")
 
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
+WM_CHAR = 0x0102
 WM_LBUTTONDOWN = 0x201
 WM_LBUTTONUP = 0x202
 WM_RBUTTONDOWN = 0x204
@@ -95,29 +96,19 @@ def press_key(vk_code: int):
         win32api.PostMessage(hwnd, WM_KEYUP, vk_code, 0)
 
 
-# Virtual key codes for characters used by type_text
-_CHAR_TO_VK = {
-    '/': 0xBF,  # VK_OEM_2
-    'a': 0x41, 'b': 0x42, 'c': 0x43, 'd': 0x44, 'e': 0x45,
-    'f': 0x46, 'g': 0x47, 'h': 0x48, 'i': 0x49, 'j': 0x4A,
-    'k': 0x4B, 'l': 0x4C, 'm': 0x4D, 'n': 0x4E, 'o': 0x4F,
-    'p': 0x50, 'q': 0x51, 'r': 0x52, 's': 0x53, 't': 0x54,
-    'u': 0x55, 'v': 0x56, 'w': 0x57, 'x': 0x58, 'y': 0x59,
-    'z': 0x5A,
-}
-
-
 def type_text(text: str):
-    """Type a string by sending individual key presses to WoW.
+    """Type a string by sending WM_CHAR messages to WoW.
 
-    Only supports lowercase a-z and '/'. Other characters are silently skipped.
+    Uses WM_CHAR instead of WM_KEYDOWN to avoid double-input and
+    keyboard layout issues (e.g. '/' on Norwegian keyboards).
     Used for sending slash commands like /logout.
     """
-    for ch in text.lower():
-        vk = _CHAR_TO_VK.get(ch)
-        if vk:
-            press_key(vk)
-            time.sleep(_rng.uniform(0.03, 0.08))
+    hwnd = get_wow_hwnd()
+    if not hwnd:
+        return
+    for ch in text:
+        win32api.PostMessage(hwnd, WM_CHAR, ord(ch), 0)
+        time.sleep(_rng.uniform(0.03, 0.08))
 
 
 # ---------------------------------------------------------------------------

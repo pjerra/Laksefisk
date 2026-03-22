@@ -15,6 +15,7 @@ import random
 import time
 from typing import Tuple
 
+import win32gui
 from PIL import ImageGrab
 
 import wow_process
@@ -72,13 +73,14 @@ class WowLogin:
     def detect_state(self) -> str:
         """Detect current WoW screen state.
 
-        Returns one of: 'in_world', 'character_select', 'unknown', 'no_window'.
+        Returns one of: 'in_world', 'character_select', 'no_window'.
 
-        Uses pixel bridge for in-world detection. Uses ImageGrab (full-screen
-        capture) for character select detection because PrintWindow does not
-        capture the WoW UI overlay at the character select screen.
+        Uses pixel bridge as fast path for in-world detection. Falls back to
+        ImageGrab colour probes for character select detection (PrintWindow
+        does not capture WoW UI overlays at the character select screen).
+        If WoW is running and not at character select, assumes in-world.
         """
-        # Try pixel bridge first — if it reads, we're in-world
+        # Fast path: pixel bridge confirms in-world
         try:
             data = self._bridge.read()
             if data is not None:
@@ -91,11 +93,20 @@ class WowLogin:
         if hwnd is None:
             return "no_window"
 
+        # Only probe character select colours when WoW is the foreground window.
+        # If another window (CMD, browser, etc.) is on top, ImageGrab would
+        # capture that window instead, causing false positives.
+        try:
+            if win32gui.GetForegroundWindow() != hwnd:
+                return "in_world"
+        except Exception:
+            return "in_world"
+
         # Capture full screen (ImageGrab captures UI overlays that PrintWindow misses)
         try:
             img = ImageGrab.grab()
         except Exception:
-            return "unknown"
+            return "in_world"  # WoW running, can't capture — assume in-world
 
         # Sample character select probe points
         try:
@@ -114,7 +125,8 @@ class WowLogin:
         finally:
             img.close()
 
-        return "unknown"
+        # WoW is running and not at character select — in-world
+        return "in_world"
 
     def _wait_for_state(self, target: str, timeout: float,
                         poll_interval: float = 1.5) -> bool:

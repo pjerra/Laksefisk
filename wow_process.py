@@ -67,6 +67,24 @@ def is_wow_classic() -> bool:
     return False
 
 
+def set_foreground():
+    """Bring the WoW window to the foreground.
+
+    Returns True if successful, False if WoW window not found or focus failed.
+    """
+    hwnd = get_wow_hwnd()
+    if not hwnd:
+        logger.warning("set_foreground: WoW window not found")
+        return False
+    try:
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception as e:
+        logger.warning(f"set_foreground failed: {e}")
+        return False
+    time.sleep(0.2)
+    return True
+
+
 def press_key(vk_code: int):
     global _last_key
     _last_key = vk_code
@@ -75,6 +93,31 @@ def press_key(vk_code: int):
         win32api.PostMessage(hwnd, WM_KEYDOWN, vk_code, 0)
         time.sleep((50 + _rng.randint(0, 75)) / 1000)
         win32api.PostMessage(hwnd, WM_KEYUP, vk_code, 0)
+
+
+# Virtual key codes for characters used by type_text
+_CHAR_TO_VK = {
+    '/': 0xBF,  # VK_OEM_2
+    'a': 0x41, 'b': 0x42, 'c': 0x43, 'd': 0x44, 'e': 0x45,
+    'f': 0x46, 'g': 0x47, 'h': 0x48, 'i': 0x49, 'j': 0x4A,
+    'k': 0x4B, 'l': 0x4C, 'm': 0x4D, 'n': 0x4E, 'o': 0x4F,
+    'p': 0x50, 'q': 0x51, 'r': 0x52, 's': 0x53, 't': 0x54,
+    'u': 0x55, 'v': 0x56, 'w': 0x57, 'x': 0x58, 'y': 0x59,
+    'z': 0x5A,
+}
+
+
+def type_text(text: str):
+    """Type a string by sending individual key presses to WoW.
+
+    Only supports lowercase a-z and '/'. Other characters are silently skipped.
+    Used for sending slash commands like /logout.
+    """
+    for ch in text.lower():
+        vk = _CHAR_TO_VK.get(ch)
+        if vk:
+            press_key(vk)
+            time.sleep(_rng.uniform(0.03, 0.08))
 
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ local PIXEL_GAP = 0
 local PIXEL_STEP = PIXEL_SIZE + PIXEL_GAP
 local NUM_PIXELS = 21       -- 0-7 control + 8-13 item ID + 14-16 bait + 17-19 hp + 20 enemy
 local BAR_Y_OFFSET = 120
-local ROW2_PIXELS = 13      -- settings pixels in row 2
+local ROW2_PIXELS = 15      -- settings pixels in row 2
 local ITEM_ID_START = 8     -- first pixel index for item ID
 local ITEM_ID_PIXELS = 6   -- 6 pixels × 3 bits = 18 bits
 local BAIT_START = 14
@@ -53,6 +53,8 @@ local statusFrame = nil
 local showSettingsPanel = false
 local settingsFrame = nil
 local activeTab = 1  -- 1=General, 2=Lists, 3=Detection
+local keyCaptureFrame = nil
+local keyCaptureCallback = nil
 -- Known openable fishing containers (clams, trunks, crates, scrollcases)
 local openableContainers = {
     [5523]  = true,  -- Small Barnacled Clam
@@ -419,27 +421,34 @@ local function UpdateRow2Pixels()
     local lk = math.min(db.lureKeyIndex or 0, 31)
     -- Pixel 27: R=lureKey[4], G=lureKey[3], B=lureKey[2]
     SetRow2PixelRaw(6, Bit(lk, 4), Bit(lk, 3), Bit(lk, 2))
-    -- Pixel 28: R=lureKey[1], G=lureKey[0], B=waitMin[3]
-    local wmin = math.min(db.lootWaitMin or 0, 15)
-    SetRow2PixelRaw(7, Bit(lk, 1), Bit(lk, 0), Bit(wmin, 3))
+    -- Pixel 28: R=lureKey[1], G=lureKey[0], B=waitMin[4]
+    local wmin = math.min(db.lootWaitMin or 0, 31)
+    SetRow2PixelRaw(7, Bit(lk, 1), Bit(lk, 0), Bit(wmin, 4))
 
-    -- [29] wait_min bits 2,1,0 (index 8)
-    SetRow2PixelRaw(8, Bit(wmin, 2), Bit(wmin, 1), Bit(wmin, 0))
+    -- [29] waitMin[3], waitMin[2], waitMin[1] (index 8)
+    SetRow2PixelRaw(8, Bit(wmin, 3), Bit(wmin, 2), Bit(wmin, 1))
 
-    -- [30] wait_max bits 3,2,1 (index 9)
-    local wmax = math.min(db.lootWaitMax or 0, 15)
-    SetRow2PixelRaw(9, Bit(wmax, 3), Bit(wmax, 2), Bit(wmax, 1))
+    -- [30] waitMin[0], waitMax[4], waitMax[3] (index 9)
+    local wmax = math.min(db.lootWaitMax or 0, 31)
+    SetRow2PixelRaw(9, Bit(wmin, 0), Bit(wmax, 4), Bit(wmax, 3))
 
-    -- [31] wait_max[0], col_mult[3], col_mult[2] (index 10)
-    local cm = math.min(db.colourMult or 0, 15)
-    SetRow2PixelRaw(10, Bit(wmax, 0), Bit(cm, 3), Bit(cm, 2))
+    -- [31] waitMax[2], waitMax[1], waitMax[0] (index 10)
+    SetRow2PixelRaw(10, Bit(wmax, 2), Bit(wmax, 1), Bit(wmax, 0))
 
-    -- [32] col_mult[1], col_mult[0], col_close[3] (index 11)
-    local cc = math.min(db.colourClose or 0, 15)
-    SetRow2PixelRaw(11, Bit(cm, 1), Bit(cm, 0), Bit(cc, 3))
+    -- [32] colMult[4], colMult[3], colMult[2] (index 11)
+    local cm = math.min(db.colourMult or 0, 31)
+    SetRow2PixelRaw(11, Bit(cm, 4), Bit(cm, 3), Bit(cm, 2))
 
-    -- [33] col_close[2], col_close[1], col_close[0] (index 12)
-    SetRow2PixelRaw(12, Bit(cc, 2), Bit(cc, 1), Bit(cc, 0))
+    -- [33] colMult[1], colMult[0], colClose[5] (index 12)
+    local cc = math.min(db.colourClose or 0, 63)
+    SetRow2PixelRaw(12, Bit(cm, 1), Bit(cm, 0), Bit(cc, 5))
+
+    -- [34] colClose[4], colClose[3], colClose[2] (index 13)
+    SetRow2PixelRaw(13, Bit(cc, 4), Bit(cc, 3), Bit(cc, 2))
+
+    -- [35] colClose[1], colClose[0], calibrationToggle (index 14)
+    SetRow2PixelRaw(14, Bit(cc, 1), Bit(cc, 0),
+        db.calibrationToggle and 255 or 0)
 end
 
 ---------------------------------------------------------------------------
@@ -566,6 +575,14 @@ end)
 -- Settings panel GUI
 ---------------------------------------------------------------------------
 
+local function CreateSectionDivider(parent, x, y, width)
+    local line = parent:CreateTexture(nil, "ARTWORK")
+    line:SetPoint("TOPLEFT", x, y)
+    line:SetSize(width or 220, 1)
+    line:SetColorTexture(0.3, 0.25, 0.15, 0.6)
+    return line
+end
+
 local function CreateCheckbox(parent, x, y, label, dbKey, onChange, tooltip)
     local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
     cb:SetPoint("TOPLEFT", x, y)
@@ -583,7 +600,7 @@ local function CreateCheckbox(parent, x, y, label, dbKey, onChange, tooltip)
     return cb
 end
 
-local function CreateSettingSlider(parent, x, y, label, dbKey, minVal, maxVal, step, displayFn, tooltip)
+local function CreateSettingSlider(parent, x, y, label, dbKey, minVal, maxVal, step, displayFn, tooltip, onChange)
     local container = CreateFrame("Frame", nil, parent)
     container:SetPoint("TOPLEFT", x, y)
     container:SetSize(200, 36)
@@ -594,6 +611,11 @@ local function CreateSettingSlider(parent, x, y, label, dbKey, minVal, maxVal, s
     local slider = CreateFrame("Slider", nil, container, "OptionsSliderTemplate")
     slider:SetPoint("TOPLEFT", 0, -14)
     slider:SetSize(180, 16)
+    -- Darker track background behind slider
+    local sliderBg = slider:CreateTexture(nil, "BACKGROUND")
+    sliderBg:SetPoint("TOPLEFT", -1, -3)
+    sliderBg:SetPoint("BOTTOMRIGHT", 1, 3)
+    sliderBg:SetColorTexture(0.15, 0.15, 0.15, 1)
     slider:SetMinMaxValues(minVal, maxVal)
     slider:SetValueStep(step)
     slider:SetObeyStepOnDrag(true)
@@ -611,10 +633,133 @@ local function CreateSettingSlider(parent, x, y, label, dbKey, minVal, maxVal, s
         val = math.floor(val / step + 0.5) * step
         LaksefiskDB[dbKey] = val
         updateText()
+        if onChange then onChange(val) end
     end)
 
+    container.label = text
+    container.sliderBg = sliderBg
     container.slider = slider
     container.dbKey = dbKey
+
+    function container:SetGreyed(greyed)
+        if greyed then
+            text:SetAlpha(0.4)
+            slider:SetAlpha(0.4)
+            sliderBg:SetColorTexture(0.1, 0.1, 0.1, 1)
+        else
+            text:SetAlpha(1)
+            slider:SetAlpha(1)
+            sliderBg:SetColorTexture(0.15, 0.15, 0.15, 1)
+        end
+    end
+    if tooltip then
+        container:EnableMouse(true)
+        AddTooltip(container, label, tooltip)
+    end
+    return container
+end
+
+local function CreateDualSlider(parent, x, y, label, dbKeyMin, dbKeyMax, minVal, maxVal, step, displayFn, tooltip)
+    local TRACK_W = 180
+    local TRACK_H = 8
+    local THUMB_W = 10
+    local THUMB_H = 16
+
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetPoint("TOPLEFT", x, y)
+    container:SetSize(220, 36)
+
+    local text = container:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    text:SetPoint("TOPLEFT", 0, 0)
+
+    -- Track background
+    local track = CreateFrame("Frame", nil, container)
+    track:SetPoint("TOPLEFT", 0, -16)
+    track:SetSize(TRACK_W, TRACK_H)
+    local trackBg = track:CreateTexture(nil, "BACKGROUND")
+    trackBg:SetAllPoints()
+    trackBg:SetColorTexture(0.15, 0.15, 0.15, 1)
+
+    -- Fill between thumbs
+    local fill = track:CreateTexture(nil, "ARTWORK")
+    fill:SetHeight(TRACK_H)
+    fill:SetColorTexture(0.4, 0.35, 0.2, 0.8)
+
+    -- Thumbs (visual only, track handles mouse)
+    local minThumb = track:CreateTexture(nil, "OVERLAY")
+    minThumb:SetSize(THUMB_W, THUMB_H)
+    local maxThumb = track:CreateTexture(nil, "OVERLAY")
+    maxThumb:SetSize(THUMB_W, THUMB_H)
+    minThumb:SetTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+    maxThumb:SetTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+
+    local dragging = nil  -- "min" or "max"
+
+    local function valToX(val)
+        return (val - minVal) / (maxVal - minVal) * TRACK_W
+    end
+
+    local function xToVal(px)
+        local raw = minVal + (px / TRACK_W) * (maxVal - minVal)
+        return math.max(minVal, math.min(maxVal, math.floor(raw / step + 0.5) * step))
+    end
+
+    local function updatePositions()
+        local lo = LaksefiskDB[dbKeyMin] or minVal
+        local hi = LaksefiskDB[dbKeyMax] or maxVal
+        local loX = valToX(lo)
+        local hiX = valToX(hi)
+        minThumb:ClearAllPoints()
+        minThumb:SetPoint("CENTER", track, "LEFT", loX, 0)
+        maxThumb:ClearAllPoints()
+        maxThumb:SetPoint("CENTER", track, "LEFT", hiX, 0)
+        fill:ClearAllPoints()
+        fill:SetPoint("LEFT", track, "LEFT", loX, 0)
+        fill:SetWidth(math.max(1, hiX - loX))
+        local fn = displayFn or tostring
+        text:SetText(label .. ": |cffffffff" .. fn(lo) .. " - " .. fn(hi) .. "|r")
+    end
+
+    track:EnableMouse(true)
+    track:SetScript("OnMouseDown", function(self, button)
+        if button ~= "LeftButton" then return end
+        local cx = select(1, GetCursorPosition()) / self:GetEffectiveScale()
+        local relX = cx - self:GetLeft()
+        local lo = LaksefiskDB[dbKeyMin] or minVal
+        local hi = LaksefiskDB[dbKeyMax] or maxVal
+        local loX = valToX(lo)
+        local hiX = valToX(hi)
+        if math.abs(relX - loX) <= math.abs(relX - hiX) then
+            dragging = "min"
+        else
+            dragging = "max"
+        end
+    end)
+
+    track:SetScript("OnMouseUp", function()
+        dragging = nil
+    end)
+
+    track:SetScript("OnUpdate", function(self)
+        if not dragging then return end
+        local cx = select(1, GetCursorPosition()) / self:GetEffectiveScale()
+        local relX = math.max(0, math.min(TRACK_W, cx - self:GetLeft()))
+        local val = xToVal(relX)
+        if dragging == "min" then
+            val = math.min(val, LaksefiskDB[dbKeyMax] or maxVal)
+            LaksefiskDB[dbKeyMin] = val
+        else
+            val = math.max(val, LaksefiskDB[dbKeyMin] or minVal)
+            LaksefiskDB[dbKeyMax] = val
+        end
+        updatePositions()
+    end)
+
+    updatePositions()
+
+    container.dbKeyMin = dbKeyMin
+    container.dbKeyMax = dbKeyMax
+    container.updatePositions = updatePositions
     if tooltip then
         container:EnableMouse(true)
         AddTooltip(container, label, tooltip)
@@ -638,29 +783,25 @@ local function CreateKeyCaptureButton(parent, x, y, label, dbKey, tooltip)
     local idx = LaksefiskDB[dbKey] or 0
     btn:SetText(KEY_INDEX_TO_NAME[idx] or "None")
 
-    local capturing = false
     btn:SetScript("OnClick", function()
-        capturing = true
         btn:SetText("|cffFFFF00Press key...|r")
-    end)
-    btn:SetScript("OnKeyDown", function(self, key)
-        if not capturing then return end
-        capturing = false
-        if key == "ESCAPE" then
-            local curIdx = LaksefiskDB[dbKey] or 0
-            btn:SetText(KEY_INDEX_TO_NAME[curIdx] or "None")
-            return
+        keyCaptureCallback = function(key)
+            if key == "ESCAPE" then
+                local curIdx = LaksefiskDB[dbKey] or 0
+                btn:SetText(KEY_INDEX_TO_NAME[curIdx] or "None")
+                return
+            end
+            local keyIdx = KEY_NAME_TO_INDEX[key]
+            if keyIdx then
+                LaksefiskDB[dbKey] = keyIdx
+                btn:SetText(KEY_INDEX_TO_NAME[keyIdx] or key)
+            else
+                local curIdx = LaksefiskDB[dbKey] or 0
+                btn:SetText(KEY_INDEX_TO_NAME[curIdx] or "None")
+            end
         end
-        local keyIdx = KEY_NAME_TO_INDEX[key]
-        if keyIdx then
-            LaksefiskDB[dbKey] = keyIdx
-            btn:SetText(KEY_INDEX_TO_NAME[keyIdx] or key)
-        else
-            local curIdx = LaksefiskDB[dbKey] or 0
-            btn:SetText(KEY_INDEX_TO_NAME[curIdx] or "None")
-        end
+        if keyCaptureFrame then keyCaptureFrame:Show() end
     end)
-    btn:EnableKeyboard(true)
 
     container.btn = btn
     container.dbKey = dbKey
@@ -673,6 +814,8 @@ end
 
 local UpdateSettingsTabs  -- forward declaration
 local generalTab, listsTab, detectionTab  -- tab content frames
+local tabButtons = {}  -- tab button references for styling
+local multSlider, closeSlider  -- detection tab slider refs for greying
 
 local function CreateEditableList(parent, x, y, height, label, dbKey)
     local container = CreateFrame("Frame", nil, parent)
@@ -687,6 +830,10 @@ local function CreateEditableList(parent, x, y, height, label, dbKey)
     local scrollFrame = CreateFrame("ScrollFrame", nil, container, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", 0, -16)
     scrollFrame:SetSize(210, height - 46)
+    local scrollBg = scrollFrame:CreateTexture(nil, "BACKGROUND")
+    scrollBg:SetPoint("TOPLEFT", -2, 2)
+    scrollBg:SetPoint("BOTTOMRIGHT", -18, -2)
+    scrollBg:SetColorTexture(0.04, 0.04, 0.04, 1)
 
     local content = CreateFrame("Frame", nil, scrollFrame)
     content:SetSize(200, 1)
@@ -720,6 +867,12 @@ local function CreateEditableList(parent, x, y, height, label, dbKey)
             local row = CreateFrame("Frame", nil, content)
             row:SetSize(200, 16)
             row:SetPoint("TOPLEFT", 0, -yPos)
+            -- Alternating row background
+            if i % 2 == 0 then
+                local rowBg = row:CreateTexture(nil, "BACKGROUND")
+                rowBg:SetAllPoints()
+                rowBg:SetColorTexture(0.1, 0.1, 0.1, 0.5)
+            end
             local nameStr = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             nameStr:SetPoint("LEFT", 2, 0)
             nameStr:SetText(name)
@@ -767,7 +920,7 @@ end
 
 local function CreateSettingsPanel()
     settingsFrame = CreateFrame("Frame", "LaksefiskSettings", UIParent, "BackdropTemplate")
-    settingsFrame:SetSize(260, 340)
+    settingsFrame:SetSize(260, 380)
     settingsFrame:SetPoint("CENTER")
     settingsFrame:SetFrameStrata("DIALOG")
     settingsFrame:SetBackdrop({
@@ -806,8 +959,33 @@ local function CreateSettingsPanel()
         settingsFrame:Hide()
     end)
 
+    -- Shared key capture overlay (shown only during key binding)
+    keyCaptureFrame = CreateFrame("Frame", nil, settingsFrame)
+    keyCaptureFrame:SetAllPoints(settingsFrame)
+    keyCaptureFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    keyCaptureFrame:EnableKeyboard(true)
+    keyCaptureFrame:EnableMouse(true)
+    keyCaptureFrame:Hide()
+    keyCaptureFrame:SetScript("OnKeyDown", function(self, key)
+        self:SetPropagateKeyboardInput(false)
+        self:Hide()
+        if keyCaptureCallback then
+            local cb = keyCaptureCallback
+            keyCaptureCallback = nil
+            cb(key)
+        end
+    end)
+    keyCaptureFrame:SetScript("OnMouseDown", function(self)
+        self:Hide()
+        if keyCaptureCallback then
+            local cb = keyCaptureCallback
+            keyCaptureCallback = nil
+            cb("ESCAPE")
+        end
+    end)
+
     local tabNames = {"General", "Lists", "Detection"}
-    local tabButtons = {}
+    tabButtons = {}
     for i, name in ipairs(tabNames) do
         local tab = CreateFrame("Button", nil, settingsFrame)
         tab:SetSize(75, 22)
@@ -822,8 +1000,27 @@ local function CreateSettingsPanel()
             LaksefiskDB.activeTab = i
             UpdateSettingsTabs()
         end)
+        tab:SetScript("OnEnter", function()
+            if i ~= activeTab then
+                tab.bg:SetColorTexture(0.15, 0.13, 0.08, 1)
+                tab.text:SetTextColor(0.85, 0.85, 0.85)
+            end
+        end)
+        tab:SetScript("OnLeave", function()
+            if i ~= activeTab then
+                tab.bg:SetColorTexture(0.05, 0.05, 0.05, 1)
+                tab.text:SetTextColor(0.6, 0.6, 0.6)
+            end
+        end)
         tabButtons[i] = tab
     end
+
+    -- Border line between tabs and content
+    local tabBorder = settingsFrame:CreateTexture(nil, "ARTWORK")
+    tabBorder:SetPoint("TOPLEFT", 8, -52)
+    tabBorder:SetPoint("TOPRIGHT", -8, -52)
+    tabBorder:SetHeight(1)
+    tabBorder:SetColorTexture(0.3, 0.25, 0.15, 0.6)
 
     local contentArea = CreateFrame("Frame", nil, settingsFrame)
     contentArea:SetPoint("TOPLEFT", 8, -54)
@@ -836,6 +1033,7 @@ local function CreateSettingsPanel()
     local sectionLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     sectionLabel:SetPoint("TOPLEFT", 0, yOff)
     sectionLabel:SetText("|cffff8000STOP CONDITIONS|r")
+    CreateSectionDivider(generalTab, 0, yOff - 12)
     yOff = yOff - 16
 
     CreateCheckbox(generalTab, 0, yOff, "Stop on friendly player", "stopFriendly", nil,
@@ -851,13 +1049,11 @@ local function CreateSettingsPanel()
     local featLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     featLabel:SetPoint("TOPLEFT", 0, yOff)
     featLabel:SetText("|cffff8000FEATURES|r")
+    CreateSectionDivider(generalTab, 0, yOff - 12)
     yOff = yOff - 16
 
     CreateCheckbox(generalTab, 0, yOff, "Auto-delete junk", "autoDelete", nil,
         "Automatically delete items on the junk list")
-    yOff = yOff - 22
-    CreateCheckbox(generalTab, 0, yOff, "Auto-calibrate", "autoCalibrate", nil,
-        "Automatically calibrate bobber detection at session start")
     yOff = yOff - 22
     CreateCheckbox(generalTab, 0, yOff, "Sound alerts", "soundAlerts", nil,
         "Play sounds for important events")
@@ -866,6 +1062,7 @@ local function CreateSettingsPanel()
     local keysLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     keysLabel:SetPoint("TOPLEFT", 0, yOff)
     keysLabel:SetText("|cffff8000KEYS|r")
+    CreateSectionDivider(generalTab, 0, yOff - 12)
     yOff = yOff - 16
 
     CreateKeyCaptureButton(generalTab, 0, yOff, "Cast key", "castKeyIndex",
@@ -878,15 +1075,12 @@ local function CreateSettingsPanel()
     local timingLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     timingLabel:SetPoint("TOPLEFT", 0, yOff)
     timingLabel:SetText("|cffff8000TIMING|r")
+    CreateSectionDivider(generalTab, 0, yOff - 12)
     yOff = yOff - 16
 
-    CreateSettingSlider(generalTab, 0, yOff, "Loot wait min", "lootWaitMin", 0, 15, 1,
-        function(v) return string.format("%.1fs", v * 0.2) end,
-        "Minimum random delay before looting")
-    yOff = yOff - 40
-    CreateSettingSlider(generalTab, 0, yOff, "Loot wait max", "lootWaitMax", 0, 15, 1,
-        function(v) return string.format("%.1fs", v * 0.2) end,
-        "Maximum random delay before looting")
+    CreateDualSlider(generalTab, 0, yOff, "Loot wait", "lootWaitMin", "lootWaitMax", 0, 30, 1,
+        function(v) return string.format("%.1fs", v * 0.1) end,
+        "Random delay range before looting (min - max)")
 
     -- Move bar button at bottom of General tab
     local moveBarBtn = CreateFrame("Button", nil, generalTab, "UIPanelButtonTemplate")
@@ -913,10 +1107,10 @@ local function CreateSettingsPanel()
         LaksefiskDB.colourMode = 0
         LaksefiskDB.castKeyIndex = 4
         LaksefiskDB.lureKeyIndex = 0
-        LaksefiskDB.lootWaitMin = 3
-        LaksefiskDB.lootWaitMax = 10
-        LaksefiskDB.colourMult = 3
-        LaksefiskDB.colourClose = 6
+        LaksefiskDB.lootWaitMin = 6
+        LaksefiskDB.lootWaitMax = 20
+        LaksefiskDB.colourMult = 10
+        LaksefiskDB.colourClose = 10
         -- Rebuild settings panel to reflect new values
         if settingsFrame then
             settingsFrame:Hide()
@@ -939,6 +1133,7 @@ local function CreateSettingsPanel()
     local skipLabel = listsTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     skipLabel:SetPoint("TOPLEFT", 0, -202)
     skipLabel:SetText("|cffff8000AUTO-SKIP (don't pause for)|r")
+    CreateSectionDivider(listsTab, 0, -214)
 
     CreateCheckbox(listsTab, 0, -218, "Party members", "skipParty", nil,
         "Don't pause for party members")
@@ -954,6 +1149,7 @@ local function CreateSettingsPanel()
     local colourLabel = detectionTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     colourLabel:SetPoint("TOPLEFT", 0, 0)
     colourLabel:SetText("|cffff8000COLOUR MODE|r")
+    CreateSectionDivider(detectionTab, 0, -12)
 
     local redBtn = CreateFrame("CheckButton", nil, detectionTab, "UIRadioButtonTemplate")
     redBtn:SetPoint("TOPLEFT", 0, -16)
@@ -986,13 +1182,61 @@ local function CreateSettingsPanel()
     AddTooltip(redBtn, "Red", "Red for standard bobbers")
     AddTooltip(blueBtn, "Blue", "Blue for special/blue bobbers")
 
-    CreateSettingSlider(detectionTab, 0, -44, "Colour multiplier", "colourMult", 0, 15, 1,
-        function(v) return string.format("%.1f", v * 0.2) end,
-        "Scales bobber colour detection range")
+    -- Calibration section
+    local calLabel = detectionTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    calLabel:SetPoint("TOPLEFT", 0, -42)
+    calLabel:SetText("|cffff8000CALIBRATION|r")
+    CreateSectionDivider(detectionTab, 0, -54)
 
-    CreateSettingSlider(detectionTab, 0, -88, "Colour closeness", "colourClose", 0, 15, 1,
-        function(v) return string.format("%.1f", v * (5.0 / 15)) end,
-        "How close a pixel must match the target bobber colour")
+    -- Greying logic for sliders when calibration is active
+    local function UpdateSliderGreying()
+        local greyed = not LaksefiskDB.slidersOverride and
+            (LaksefiskDB.autoCalibrate or LaksefiskDB.calibrationActive)
+        if multSlider then multSlider:SetGreyed(greyed) end
+        if closeSlider then closeSlider:SetGreyed(greyed) end
+    end
+
+    local function OnSliderMoved()
+        LaksefiskDB.slidersOverride = true
+        LaksefiskDB.calibrationActive = false
+        UpdateSliderGreying()
+    end
+
+    CreateCheckbox(detectionTab, 0, -58, "Auto-calibrate", "autoCalibrate", function()
+        if LaksefiskDB.autoCalibrate then
+            LaksefiskDB.slidersOverride = false
+        end
+        UpdateSliderGreying()
+    end, "Automatically calibrate colour detection at session start")
+
+    local calBtn = CreateFrame("Button", nil, detectionTab, "UIPanelButtonTemplate")
+    calBtn:SetPoint("TOPLEFT", 130, -58)
+    calBtn:SetSize(90, 22)
+    calBtn:SetText("Calibrate")
+    calBtn:SetScript("OnClick", function()
+        LaksefiskDB.calibrationToggle = not LaksefiskDB.calibrationToggle
+        LaksefiskDB.calibrationActive = true
+        LaksefiskDB.slidersOverride = false
+        UpdateSliderGreying()
+        print("|cff4FC3F7Laksefisk|r calibration requested")
+    end)
+    AddTooltip(calBtn, "Calibrate", "Run colour calibration now")
+
+    -- Sliders section
+    local sliderLabel = detectionTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    sliderLabel:SetPoint("TOPLEFT", 0, -86)
+    sliderLabel:SetText("|cffff8000MANUAL TUNING|r")
+    CreateSectionDivider(detectionTab, 0, -98)
+
+    multSlider = CreateSettingSlider(detectionTab, 0, -102, "Colour multiplier", "colourMult", 0, 30, 1,
+        function(v) return string.format("%.1f", v * 0.1) end,
+        "Scales bobber colour detection range", OnSliderMoved)
+
+    closeSlider = CreateSettingSlider(detectionTab, 0, -146, "Colour closeness", "colourClose", 0, 50, 1,
+        function(v) return string.format("%.1f", v * 0.1) end,
+        "How close a pixel must match the target bobber colour", OnSliderMoved)
+
+    UpdateSliderGreying()
 
     settingsFrame:Hide()
 
@@ -1008,6 +1252,16 @@ UpdateSettingsTabs = function()
     if generalTab then generalTab:SetShown(activeTab == 1) end
     if listsTab then listsTab:SetShown(activeTab == 2) end
     if detectionTab then detectionTab:SetShown(activeTab == 3) end
+    -- Style tabs: active = lighter highlight, inactive = darker
+    for i, tab in ipairs(tabButtons) do
+        if i == activeTab then
+            tab.bg:SetColorTexture(0.25, 0.22, 0.15, 1)
+            tab.text:SetTextColor(1, 0.82, 0)
+        else
+            tab.bg:SetColorTexture(0.05, 0.05, 0.05, 1)
+            tab.text:SetTextColor(0.6, 0.6, 0.6)
+        end
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -1182,6 +1436,12 @@ local function CreatePixelBar()
         px:SetColorTexture(0, 0, 0, 1)
         row2pixels[i] = px
     end
+    -- Hide row 2 if settings bar is disabled
+    if not LaksefiskDB.settingsBarEnabled then
+        for i = 0, ROW2_PIXELS - 1 do
+            if row2pixels[i] then row2pixels[i]:Hide() end
+        end
+    end
 
     SetPixelRaw(0, 255, 0, 255)
     SetPixelRaw(1, 0, 255, 255)
@@ -1231,10 +1491,36 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if LaksefiskDB.colourMode == nil then LaksefiskDB.colourMode = 0 end  -- 0=Red, 1=Blue
         if LaksefiskDB.castKeyIndex == nil then LaksefiskDB.castKeyIndex = 4 end  -- key "4"
         if LaksefiskDB.lureKeyIndex == nil then LaksefiskDB.lureKeyIndex = 0 end  -- None
-        if LaksefiskDB.lootWaitMin == nil then LaksefiskDB.lootWaitMin = 3 end  -- index 3 = 0.6s
-        if LaksefiskDB.lootWaitMax == nil then LaksefiskDB.lootWaitMax = 10 end -- index 10 = 2.0s
-        if LaksefiskDB.colourMult == nil then LaksefiskDB.colourMult = 3 end   -- index 3 = 0.6
-        if LaksefiskDB.colourClose == nil then LaksefiskDB.colourClose = 6 end -- index 6 = 2.0
+        -- Migrate loot wait from 0.2 step (0-15) to 0.1 step (0-30)
+        if not LaksefiskDB.lootWaitMigrated then
+            if LaksefiskDB.lootWaitMin ~= nil then
+                LaksefiskDB.lootWaitMin = math.min(LaksefiskDB.lootWaitMin * 2, 30)
+            end
+            if LaksefiskDB.lootWaitMax ~= nil then
+                LaksefiskDB.lootWaitMax = math.min(LaksefiskDB.lootWaitMax * 2, 30)
+            end
+            LaksefiskDB.lootWaitMigrated = true
+        end
+        if LaksefiskDB.lootWaitMin == nil then LaksefiskDB.lootWaitMin = 6 end  -- 0.6s
+        if LaksefiskDB.lootWaitMax == nil then LaksefiskDB.lootWaitMax = 20 end -- 2.0s
+        -- Migrate colour sliders from old step to 0.1 step
+        if not LaksefiskDB.colourSliderMigrated then
+            if LaksefiskDB.colourMult ~= nil then
+                -- Old: v*0.2, New: v*0.1 → multiply by 2
+                LaksefiskDB.colourMult = math.min(LaksefiskDB.colourMult * 2, 30)
+            end
+            if LaksefiskDB.colourClose ~= nil then
+                -- Old: v*(5/15), New: v*0.1 → multiply by 10/3
+                LaksefiskDB.colourClose = math.min(math.floor(LaksefiskDB.colourClose * 10 / 3 + 0.5), 50)
+            end
+            LaksefiskDB.colourSliderMigrated = true
+        end
+        if LaksefiskDB.colourMult == nil then LaksefiskDB.colourMult = 10 end   -- 1.0
+        if LaksefiskDB.colourClose == nil then LaksefiskDB.colourClose = 10 end -- 1.0
+        if LaksefiskDB.settingsBarEnabled == nil then LaksefiskDB.settingsBarEnabled = false end
+        if LaksefiskDB.calibrationToggle == nil then LaksefiskDB.calibrationToggle = false end
+        if LaksefiskDB.calibrationActive == nil then LaksefiskDB.calibrationActive = false end
+        if LaksefiskDB.slidersOverride == nil then LaksefiskDB.slidersOverride = false end
         CreatePixelBar()
         CreateStatusBar()
         -- Restore status bar visibility
@@ -1356,7 +1642,9 @@ updateFrame:SetScript("OnUpdate", function(self, dt)
         CheckMouseoverBobber()
         if barFrame then
             UpdateAllPixels()
-            UpdateRow2Pixels()
+            if LaksefiskDB.settingsBarEnabled then
+                UpdateRow2Pixels()
+            end
             UpdateStatusBar()
         end
     end
@@ -1608,7 +1896,27 @@ SlashCmdList["LAKSEFISK"] = function(msg)
             if statusFrame then statusFrame:Hide() end
         end
 
+    elseif cmd == "settingsbar" then
+        LaksefiskDB.settingsBarEnabled = not LaksefiskDB.settingsBarEnabled
+        local state = LaksefiskDB.settingsBarEnabled and "|cff66FF66ON|r" or "|cffFF6666OFF|r"
+        print("|cff4FC3F7Laksefisk|r settings bar: " .. state)
+        if LaksefiskDB.settingsBarEnabled then
+            for i = 0, ROW2_PIXELS - 1 do
+                if row2pixels[i] then row2pixels[i]:Show() end
+            end
+        else
+            showSettingsPanel = false
+            if settingsFrame then settingsFrame:Hide() end
+            for i = 0, ROW2_PIXELS - 1 do
+                if row2pixels[i] then row2pixels[i]:Hide() end
+            end
+        end
+
     elseif cmd == "settings" then
+        if not LaksefiskDB.settingsBarEnabled then
+            print("|cff4FC3F7Laksefisk|r settings bar is disabled. Enable with /lf settingsbar")
+            return
+        end
         showSettingsPanel = not showSettingsPanel
         if showSettingsPanel then
             if settingsFrame then settingsFrame:Show() end
@@ -1620,6 +1928,7 @@ SlashCmdList["LAKSEFISK"] = function(msg)
         print("|cff4FC3F7Laksefisk|r commands:")
         print("  /lf show | hide | debug")
         print("  /lf status  (toggle status bar)")
+        print("  /lf settingsbar  (toggle settings pixel bar)")
         print("  /lf settings  (toggle settings panel)")
         print("  /lf test | test2 | test3  (fake loot)")
         print("  /lf whisper | say | yell  (fake chat)")

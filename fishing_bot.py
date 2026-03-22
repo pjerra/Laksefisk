@@ -58,6 +58,10 @@ class LaksefiskBot:
         self._dc_count: int = 0
         self._pixel_classifier = None  # set by GUI for auto-calibration
         self._calibrated: bool = False  # sweep once at start
+        self._last_cal_toggle: Optional[bool] = None  # track addon calibrate button
+        self._last_addon_mult: Optional[float] = None  # track slider changes
+        self._last_addon_close: Optional[float] = None
+        self._use_addon_sliders: bool = True  # start with slider values until calibration
         self.debug_screenshots: bool = False
         self._paused = threading.Event()
         self._paused.set()  # starts unpaused
@@ -89,6 +93,7 @@ class LaksefiskBot:
                 if self.auto_calibrate and self._pixel_classifier and not self._calibrated:
                     if sweep_calibrate(self._pixel_classifier, self._wow_screen):
                         self._calibrated = True
+                        self._use_addon_sliders = False
                         logger.info("Auto-calibration complete — using calibrated values")
                     else:
                         logger.warning("Auto-calibration failed — will retry next cast")
@@ -135,6 +140,24 @@ class LaksefiskBot:
             self.lure_key = None
         self.loot_wait_min = data.s_loot_wait_min
         self.loot_wait_max = data.s_loot_wait_max
+        # Detect calibration request from addon button
+        if self._last_cal_toggle is not None and data.s_calibration_toggle != self._last_cal_toggle:
+            logger.info("Addon calibration request detected")
+            self._calibrated = False  # triggers re-calibration on next cast
+            self._use_addon_sliders = False
+        self._last_cal_toggle = data.s_calibration_toggle
+        # Detect manual slider changes — override calibration
+        addon_mult = data.s_colour_multiplier
+        addon_close = data.s_colour_closeness_multiplier
+        if self._last_addon_mult is not None:
+            if addon_mult != self._last_addon_mult or addon_close != self._last_addon_close:
+                self._use_addon_sliders = True
+        self._last_addon_mult = addon_mult
+        self._last_addon_close = addon_close
+        # Apply slider values to pixel classifier when not calibrated
+        if self._use_addon_sliders and self._pixel_classifier:
+            self._pixel_classifier.colour_multiplier = addon_mult
+            self._pixel_classifier.colour_closeness_multiplier = addon_close
 
     def _read_bridge(self) -> "Optional[PixelBridgeData]":
         """Read pixel bridge, skipping slow scan if addon not found."""

@@ -124,8 +124,9 @@ class PixelBridgeData:
     s_lure_key: Optional[int] = None       # VK code or None
     s_loot_wait_min: float = 0.6     # seconds
     s_loot_wait_max: float = 2.0     # seconds
-    s_colour_multiplier: float = 0.6
-    s_colour_closeness_multiplier: float = 2.0
+    s_colour_multiplier: float = 1.0
+    s_colour_closeness_multiplier: float = 1.0
+    s_calibration_toggle: bool = False
 
 
 def _colour_match(actual, expected):
@@ -437,6 +438,7 @@ class PixelBridge:
             data.s_loot_wait_max = settings["loot_wait_max"]
             data.s_colour_multiplier = settings["colour_multiplier"]
             data.s_colour_closeness_multiplier = settings["colour_closeness_multiplier"]
+            data.s_calibration_toggle = settings["calibration_toggle"]
 
         self._last_data = data
         return data
@@ -473,17 +475,21 @@ class PixelBridge:
         # 5-bit lure_key: pixel 27 channels R,G,B + pixel 28 R,G
         lure_key_idx = bits(6, 0, 5)  # row2 pixel index 6, channel R
 
-        # 4-bit wait_min: pixel 28 B + pixel 29 R,G,B
-        wait_min_raw = bits(7, 2, 4)
+        # 5-bit wait_min: pixel 28 B + pixel 29 R,G,B + pixel 30 R
+        wait_min_raw = bits(7, 2, 5)
 
-        # 4-bit wait_max: pixel 30 R,G,B + pixel 31 R
-        wait_max_raw = bits(9, 0, 4)
+        # 5-bit wait_max: pixel 30 G,B + pixel 31 R,G,B
+        wait_max_raw = bits(9, 1, 5)
 
-        # 4-bit colour_mult: pixel 31 G,B + pixel 32 R,G
-        col_mult_raw = bits(10, 1, 4)
+        # 5-bit colour_mult: pixel 32 R,G,B + pixel 33 R,G
+        col_mult_raw = bits(11, 0, 5)
 
-        # 4-bit colour_close: pixel 32 B + pixel 33 R,G,B
-        col_close_raw = bits(11, 2, 4)
+        # 6-bit colour_close: pixel 33 B + pixel 34 R,G,B + pixel 35 R,G
+        col_close_raw = bits(12, 2, 6)
+
+        # Calibration toggle: pixel 35 (index 14) channel B
+        p35_r, p35_g, p35_b = rp2(14)
+        calibration_toggle = p35_b > 128
 
         # Decode key indices to VK codes
         cast_vk = KEY_INDEX_TABLE[cast_key_idx] if cast_key_idx < len(KEY_INDEX_TABLE) else None
@@ -502,10 +508,11 @@ class PixelBridge:
             "skip_friends": p25_r > 128,
             "cast_key": cast_vk,
             "lure_key": lure_vk,
-            "loot_wait_min": round(wait_min_raw * 0.2, 1),
-            "loot_wait_max": round(wait_max_raw * 0.2, 1),
-            "colour_multiplier": round(col_mult_raw * 0.2, 1),
-            "colour_closeness_multiplier": round(col_close_raw * (5.0 / 15), 2),
+            "loot_wait_min": round(wait_min_raw * 0.1, 1),
+            "loot_wait_max": round(wait_max_raw * 0.1, 1),
+            "colour_multiplier": round(col_mult_raw * 0.1, 1),
+            "colour_closeness_multiplier": round(col_close_raw * 0.1, 1),
+            "calibration_toggle": calibration_toggle,
         }
 
     def _capture_bottom_strip(self):

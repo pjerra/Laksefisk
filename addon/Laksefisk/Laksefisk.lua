@@ -50,6 +50,9 @@ local junkOnCursor = false
 local sessionStartTime = nil   -- GetTime() when first cast happened
 local showStatusBar = false
 local statusFrame = nil
+local showSettingsPanel = false
+local settingsFrame = nil
+local activeTab = 1  -- 1=General, 2=Lists, 3=Detection
 -- Known openable fishing containers (clams, trunks, crates, scrollcases)
 local openableContainers = {
     [5523]  = true,  -- Small Barnacled Clam
@@ -546,6 +549,238 @@ hooksecurefunc("StaticPopup_Show", function(which)
 end)
 
 ---------------------------------------------------------------------------
+-- Settings panel GUI
+---------------------------------------------------------------------------
+
+local function CreateCheckbox(parent, x, y, label, dbKey, onChange)
+    local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+    cb:SetPoint("TOPLEFT", x, y)
+    cb:SetSize(22, 22)
+    cb.text = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    cb.text:SetPoint("LEFT", cb, "RIGHT", 2, 0)
+    cb.text:SetText(label)
+    cb:SetChecked(LaksefiskDB[dbKey] and true or false)
+    cb:SetScript("OnClick", function(self)
+        LaksefiskDB[dbKey] = self:GetChecked() and true or false
+        if onChange then onChange(LaksefiskDB[dbKey]) end
+    end)
+    cb.dbKey = dbKey
+    return cb
+end
+
+local function CreateSettingSlider(parent, x, y, label, dbKey, minVal, maxVal, step, displayFn)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetPoint("TOPLEFT", x, y)
+    container:SetSize(200, 36)
+
+    local text = container:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    text:SetPoint("TOPLEFT", 0, 0)
+
+    local slider = CreateFrame("Slider", nil, container, "OptionsSliderTemplate")
+    slider:SetPoint("TOPLEFT", 0, -14)
+    slider:SetSize(180, 16)
+    slider:SetMinMaxValues(minVal, maxVal)
+    slider:SetValueStep(step)
+    slider:SetObeyStepOnDrag(true)
+    slider:SetValue(LaksefiskDB[dbKey] or minVal)
+    slider.Low:SetText("")
+    slider.High:SetText("")
+
+    local function updateText()
+        local val = slider:GetValue()
+        text:SetText(label .. ": |cffffffff" .. (displayFn and displayFn(val) or tostring(val)) .. "|r")
+    end
+    updateText()
+
+    slider:SetScript("OnValueChanged", function(self, val)
+        val = math.floor(val / step + 0.5) * step
+        LaksefiskDB[dbKey] = val
+        updateText()
+    end)
+
+    container.slider = slider
+    container.dbKey = dbKey
+    return container
+end
+
+local function CreateKeyCaptureButton(parent, x, y, label, dbKey)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetPoint("TOPLEFT", x, y)
+    container:SetSize(200, 20)
+
+    local text = container:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    text:SetPoint("LEFT", 0, 0)
+    text:SetText(label .. ": ")
+
+    local btn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
+    btn:SetPoint("LEFT", text, "RIGHT", 4, 0)
+    btn:SetSize(60, 20)
+
+    local idx = LaksefiskDB[dbKey] or 0
+    btn:SetText(KEY_INDEX_TO_NAME[idx] or "None")
+
+    local capturing = false
+    btn:SetScript("OnClick", function()
+        capturing = true
+        btn:SetText("|cffFFFF00Press key...|r")
+    end)
+    btn:SetScript("OnKeyDown", function(self, key)
+        if not capturing then return end
+        capturing = false
+        if key == "ESCAPE" then
+            local curIdx = LaksefiskDB[dbKey] or 0
+            btn:SetText(KEY_INDEX_TO_NAME[curIdx] or "None")
+            return
+        end
+        local keyIdx = KEY_NAME_TO_INDEX[key]
+        if keyIdx then
+            LaksefiskDB[dbKey] = keyIdx
+            btn:SetText(KEY_INDEX_TO_NAME[keyIdx] or key)
+        else
+            local curIdx = LaksefiskDB[dbKey] or 0
+            btn:SetText(KEY_INDEX_TO_NAME[curIdx] or "None")
+        end
+    end)
+    btn:EnableKeyboard(true)
+
+    container.btn = btn
+    container.dbKey = dbKey
+    return container
+end
+
+local UpdateSettingsTabs  -- forward declaration
+local generalTab, listsTab, detectionTab  -- tab content frames
+
+local function CreateSettingsPanel()
+    settingsFrame = CreateFrame("Frame", "LaksefiskSettings", UIParent, "BackdropTemplate")
+    settingsFrame:SetSize(260, 340)
+    settingsFrame:SetPoint("CENTER")
+    settingsFrame:SetFrameStrata("DIALOG")
+    settingsFrame:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 12,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    settingsFrame:SetBackdropColor(0.08, 0.08, 0.08, 0.95)
+    settingsFrame:SetBackdropBorderColor(0.4, 0.35, 0.2, 1)
+
+    tinsert(UISpecialFrames, "LaksefiskSettings")
+
+    settingsFrame:SetMovable(true)
+    settingsFrame:EnableMouse(true)
+    settingsFrame:RegisterForDrag("LeftButton")
+    settingsFrame:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    settingsFrame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        local x, y = self:GetLeft(), self:GetBottom()
+        if x and y then
+            LaksefiskDB.settingsPos = { x = x, y = y }
+            self:ClearAllPoints()
+            self:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, y)
+        end
+    end)
+
+    local title = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", 10, -8)
+    title:SetText("|cffffd100Laksefisk Settings|r")
+
+    local closeBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelCloseButton")
+    closeBtn:SetPoint("TOPRIGHT", -2, -2)
+    closeBtn:SetScript("OnClick", function()
+        showSettingsPanel = false
+        settingsFrame:Hide()
+    end)
+
+    local tabNames = {"General", "Lists", "Detection"}
+    local tabButtons = {}
+    for i, name in ipairs(tabNames) do
+        local tab = CreateFrame("Button", nil, settingsFrame)
+        tab:SetSize(75, 22)
+        tab:SetPoint("TOPLEFT", 8 + (i - 1) * 78, -28)
+        tab.text = tab:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        tab.text:SetPoint("CENTER")
+        tab.text:SetText(name)
+        tab.bg = tab:CreateTexture(nil, "BACKGROUND")
+        tab.bg:SetAllPoints()
+        tab:SetScript("OnClick", function()
+            activeTab = i
+            LaksefiskDB.activeTab = i
+            UpdateSettingsTabs()
+        end)
+        tabButtons[i] = tab
+    end
+
+    local contentArea = CreateFrame("Frame", nil, settingsFrame)
+    contentArea:SetPoint("TOPLEFT", 8, -54)
+    contentArea:SetPoint("BOTTOMRIGHT", -8, 8)
+
+    generalTab = CreateFrame("Frame", nil, contentArea)
+    generalTab:SetAllPoints()
+
+    local yOff = 0
+    local sectionLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    sectionLabel:SetPoint("TOPLEFT", 0, yOff)
+    sectionLabel:SetText("|cffff8000STOP CONDITIONS|r")
+    yOff = yOff - 16
+
+    CreateCheckbox(generalTab, 0, yOff, "Stop on friendly player", "stopFriendly")
+    yOff = yOff - 22
+    CreateCheckbox(generalTab, 0, yOff, "Stop on enemy player", "stopEnemy")
+    yOff = yOff - 22
+    CreateCheckbox(generalTab, 0, yOff, "Stop on bags full", "stopBags")
+    yOff = yOff - 28
+
+    local featLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    featLabel:SetPoint("TOPLEFT", 0, yOff)
+    featLabel:SetText("|cffff8000FEATURES|r")
+    yOff = yOff - 16
+
+    CreateCheckbox(generalTab, 0, yOff, "Auto-delete junk", "autoDelete")
+    yOff = yOff - 22
+    CreateCheckbox(generalTab, 0, yOff, "Auto-calibrate", "autoCalibrate")
+    yOff = yOff - 22
+    CreateCheckbox(generalTab, 0, yOff, "Sound alerts", "soundAlerts")
+    yOff = yOff - 28
+
+    local keysLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    keysLabel:SetPoint("TOPLEFT", 0, yOff)
+    keysLabel:SetText("|cffff8000KEYS|r")
+    yOff = yOff - 16
+
+    CreateKeyCaptureButton(generalTab, 0, yOff, "Cast key", "castKeyIndex")
+    yOff = yOff - 24
+    CreateKeyCaptureButton(generalTab, 0, yOff, "Lure key", "lureKeyIndex")
+    yOff = yOff - 32
+
+    local timingLabel = generalTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    timingLabel:SetPoint("TOPLEFT", 0, yOff)
+    timingLabel:SetText("|cffff8000TIMING|r")
+    yOff = yOff - 16
+
+    CreateSettingSlider(generalTab, 0, yOff, "Loot wait min", "lootWaitMin", 0, 15, 1,
+        function(v) return string.format("%.1fs", v * 0.2) end)
+    yOff = yOff - 40
+    CreateSettingSlider(generalTab, 0, yOff, "Loot wait max", "lootWaitMax", 0, 15, 1,
+        function(v) return string.format("%.1fs", v * 0.2) end)
+
+    settingsFrame:Hide()
+
+    local saved = LaksefiskDB.settingsPos
+    if saved and saved.x and saved.y then
+        settingsFrame:ClearAllPoints()
+        settingsFrame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", saved.x, saved.y)
+    end
+end
+
+UpdateSettingsTabs = function()
+    if not settingsFrame then return end
+    if generalTab then generalTab:SetShown(activeTab == 1) end
+    if listsTab then listsTab:SetShown(activeTab == 2) end
+    if detectionTab then detectionTab:SetShown(activeTab == 3) end
+end
+
+---------------------------------------------------------------------------
 -- Status bar GUI
 ---------------------------------------------------------------------------
 
@@ -776,6 +1011,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             showStatusBar = true
             if statusFrame then statusFrame:Show() end
         end
+        CreateSettingsPanel()
+        activeTab = LaksefiskDB.activeTab or 1
+        UpdateSettingsTabs()
         local nDel = #LaksefiskDB.deleteList
         local cStr = LaksefiskDB.autoOpenContainers and "ON" or "OFF"
         print("|cff4FC3F7Laksefisk|r pixel bridge v9 loaded (" .. NUM_PIXELS .. "+" .. ROW2_PIXELS .. " pixels, " .. nDel .. " auto-delete, containers " .. cStr .. ")")
@@ -1137,6 +1375,14 @@ SlashCmdList["LAKSEFISK"] = function(msg)
             if statusFrame then statusFrame:Show() end
         else
             if statusFrame then statusFrame:Hide() end
+        end
+
+    elseif cmd == "settings" then
+        showSettingsPanel = not showSettingsPanel
+        if showSettingsPanel then
+            if settingsFrame then settingsFrame:Show() end
+        else
+            if settingsFrame then settingsFrame:Hide() end
         end
 
     else

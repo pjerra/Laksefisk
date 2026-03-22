@@ -151,6 +151,18 @@ class WowScreen:
 
         return cropped
 
+    def capture_full(self) -> Optional[Image.Image]:
+        """Capture the full WoW client area without cropping.
+
+        Returns an RGB PIL Image, or None if WoW window not found or capture fails.
+        Also refreshes geometry (client_origin, client_size) as a side effect.
+        """
+        self._refresh_hwnd()
+        if not self._hwnd:
+            return None
+        self._update_geometry()
+        return self._print_window_capture()
+
     def get_region(self, x: int, y: int, w: int, h: int) -> Image.Image:
         """Capture a sub-region of the WoW client area.
 
@@ -195,3 +207,11 @@ class WowScreen:
             self._refresh_hwnd()
             self._update_geometry()
         return self._client_size
+
+    @property
+    def client_origin(self) -> Tuple[int, int]:
+        """Current WoW client area origin (x, y) in screen coordinates."""
+        if self._client_origin == (0, 0):
+            self._refresh_hwnd()
+            self._update_geometry()
+        return self._client_origin

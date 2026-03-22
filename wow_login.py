@@ -219,3 +219,52 @@ class WowLogin:
 
         logger.error(f"Login: timed out after {timeout}s")
         return False
+
+    def logout(self, timeout: int = 30) -> bool:
+        """Log out from in-world to character select screen.
+
+        Types /logout in chat and waits for the character select screen.
+
+        Args:
+            timeout: Maximum seconds to wait for logout to complete.
+
+        Returns:
+            True if reached character select, False on timeout/failure.
+        """
+        start = time.monotonic()
+
+        state = self.detect_state()
+        if state == "character_select":
+            logger.info("Logout: already at character select")
+            return True
+
+        if state != "in_world":
+            logger.error(f"Logout: expected in_world, got {state}")
+            return False
+
+        # Bring WoW to foreground
+        wow_process.set_foreground()
+
+        # Open chat and type /logout
+        wow_process.press_key(0x0D)  # Enter — open chat
+        time.sleep(_rng.uniform(0.1, 0.3))
+        wow_process.type_text("/logout")
+        time.sleep(_rng.uniform(0.05, 0.15))
+        wow_process.press_key(0x0D)  # Enter — send command
+
+        logger.info("Logout: sent /logout command")
+
+        # Wait for character select
+        remaining = timeout - (time.monotonic() - start)
+        if remaining > 0 and self._wait_for_state("character_select", remaining):
+            logger.info("Logout: reached character select")
+            return True
+
+        # Check if we're still in-world (logout may have been interrupted)
+        state = self.detect_state()
+        if state == "in_world":
+            logger.warning("Logout: still in-world — logout may have been interrupted")
+        else:
+            logger.error(f"Logout: timed out in state '{state}'")
+
+        return False

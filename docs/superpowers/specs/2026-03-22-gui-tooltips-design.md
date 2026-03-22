@@ -48,12 +48,12 @@ For CheckButtons that already have OnEnter/OnLeave scripts, use `HookScript` ins
 
 | Control | Tooltip |
 |---------|---------|
-| Play/Stop button | Start/stop fishing (F5) |
-| Pause button | Pause/resume fishing (F7) *(exists, keep)* |
-| Calibrate button | Calibrate bobber detection (F6 start/stop) *(exists, keep)* |
-| Compact toggle | Toggle compact mode *(exists, keep)* |
+| Play/Stop button | Start/stop fishing (F6) |
+| Pause button | Pause/resume fishing (F7) *(exists, restyle only)* |
+| Calibrate button | Calibrate bobber colour detection *(exists, fix text — remove wrong "F6" hotkey reference)* |
+| Compact toggle | Toggle compact mode *(exists, restyle only)* |
 | Gear icon | Open settings |
-| Addon status dot | Addon connection status — green when pixel bridge is active |
+| Addon status dot + label | Addon connection status — green when pixel bridge is active *(attach to `_addon_canvas` only, not the label)* |
 | Fish header label | Click to open loot report in browser |
 | Fish reset button | Reset fish count for this session |
 | Log chevron | Collapse/expand log panel |
@@ -80,6 +80,8 @@ For CheckButtons that already have OnEnter/OnLeave scripts, use `HookScript` ins
 | Pixel bar region button | Advanced — manually set the screen region where the addon pixel bar is located |
 | Reset defaults button | Reset all settings to defaults |
 | Colour preview chevron | Preview bobber colour detection |
+| Capture button (colour preview) | Take a screenshot to preview colour detection |
+| Live checkbox (colour preview) | Continuously update the colour preview |
 
 ## Tooltip Text — WoW Addon Settings Panel
 
@@ -106,12 +108,13 @@ For CheckButtons that already have OnEnter/OnLeave scripts, use `HookScript` ins
 
 ## Tooltip Text — WoW Addon Status Bar
 
+FontStrings (`statusFrame.state`, `.line1`, `.line2`, `.line3`) cannot receive mouse scripts — they are not frames. Attach a single tooltip to the `statusFrame` itself:
+
 | Element | Tooltip |
 |---------|---------|
-| Title "Laksefisk" | Click and drag to move |
-| State label | Current fishing state |
-| Caught line | Fish caught this session |
-| Time/bags line | Session duration and bag space |
+| statusFrame (the whole bar) | Drag to move. /lf status to toggle |
+
+**Excluded:** Individual lines (state, caught, time/bags, alerts) — FontStrings can't have tooltips. The bar-level tooltip is sufficient.
 
 ## Implementation Notes
 
@@ -147,14 +150,22 @@ Uses `HookScript` so it doesn't clobber existing `OnEnter`/`OnLeave` handlers (C
 
 ### Existing tooltips
 
-Three tooltips already exist on Pause, Cal, and Compact buttons. Their text stays the same — only the visual style changes when `_Tooltip` is restyled.
+Three tooltips already exist on Pause, Cal, and Compact buttons. Pause and Compact text stays the same. Cal tooltip text changes from "Calibrate bobber detection (F6 start/stop)" to "Calibrate bobber colour detection" — the F6 reference was wrong (F6 is the fishing toggle hotkey, Cal has no hotkey).
+
+### Intentionally excluded
+
+- **WoW addon Lists tab**: Add/Remove/Clear buttons and EditBox inputs are self-explanatory from their labels. No tooltips needed.
+- **WoW addon tab buttons** (General/Lists/Detection): Standard tab navigation, no tooltip needed.
+- **WoW addon close button**: Uses `UIPanelCloseButton` which has built-in WoW tooltip behaviour.
+- **Python session timer label**: Non-interactive display, no tooltip.
+- **Python bobber view canvas**: Main content area — tooltip would be intrusive.
 
 ## Files Changed
 
 **Python:**
 - `widgets.py` — restyle `_Tooltip` class (background, text colour, border)
-- `gui.py` — add `_Tooltip()` calls to ~6 main window controls
-- `settings.py` — add `_Tooltip()` calls to ~18 settings controls
+- `gui.py` — add `_Tooltip()` calls to ~6 main window controls, fix Cal tooltip text
+- `settings.py` — add `_Tooltip()` calls to ~19 settings controls
 
 **WoW Addon:**
-- `addon/Laksefisk/Laksefisk.lua` — add `AddTooltip` helper, add tooltip calls to ~18 settings controls + 4 status bar elements
+- `addon/Laksefisk/Laksefisk.lua` — add `AddTooltip` helper, add tooltip calls to ~18 settings controls + 1 status bar frame tooltip

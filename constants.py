@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
     "debug_screenshots": False,
     "pixel_bar_region": None,
     "compact_mode": False,
+    "character_slot": 1,
 }
 
 # Dark theme

@@ -23,6 +23,7 @@ from pixel_classifier import ClassifierMode
 from widgets import (
     RangeSliderWithEntries,
     SliderWithEntry,
+    _Tooltip,
     _bind_hover,
 )
 if TYPE_CHECKING:
@@ -76,6 +77,7 @@ class SettingsPopup(tk.Toplevel):
         e.bind("<FocusOut>", lambda _: self._cast_var.set(
             self._parent._vk_to_label(self._parent._cast_key)))
         e.bind("<KeyRelease>", self._on_cast_key)
+        _Tooltip(e, "Key the bot presses to cast. Must match your WoW action bar keybind")
         row += 1
 
         self._add_label(container, "Lure Key", row)
@@ -92,6 +94,7 @@ class SettingsPopup(tk.Toplevel):
         e.bind("<FocusOut>", lambda _: self._lure_var.set(
             self._parent._vk_to_label(self._parent._lure_key) if self._parent._lure_key else "-"))
         e.bind("<KeyRelease>", self._on_lure_key)
+        _Tooltip(e, "Key for applying bait/lure. Leave empty for none")
         row += 1
 
         # ── Timing ──
@@ -104,6 +107,8 @@ class SettingsPopup(tk.Toplevel):
             command=self._on_loot_range_change
         )
         self._loot_range.grid(row=row, column=1, sticky="ew", pady=3, padx=(4, 0))
+        _Tooltip(self._loot_range,
+                 "Random delay before looting after a bite. Adds human-like variation")
         row += 1
 
         self._add_label(container, "Bite Sensitivity", row)
@@ -113,6 +118,9 @@ class SettingsPopup(tk.Toplevel):
             command=lambda v: self._on_bite_change(v)
         )
         self._bite_slider.grid(row=row, column=1, sticky="ew", pady=3, padx=(4, 0))
+        _Tooltip(self._bite_slider,
+                 "How strong a bobber dip must be to count as a bite. "
+                 "Lower = more sensitive, higher = fewer false positives")
         row += 1
 
         # ── Detection ──
@@ -131,6 +139,8 @@ class SettingsPopup(tk.Toplevel):
                 activebackground=BG_DARK, activeforeground=ACCENT,
                 command=self._on_mode_change
             ).pack(side="left", padx=(0, 8))
+        _Tooltip(mode_frame,
+                 "Red for standard bobbers, Blue for special/blue bobbers")
         row += 1
 
         self._add_label(container, "Colour Multiplier", row)
@@ -140,6 +150,9 @@ class SettingsPopup(tk.Toplevel):
             command=lambda v: self._on_mult_change(v)
         )
         self._mult_slider.grid(row=row, column=1, sticky="ew", pady=3, padx=(4, 0))
+        _Tooltip(self._mult_slider,
+                 "Scales bobber colour detection range. "
+                 "Higher = wider match, may pick up non-bobber reds")
         row += 1
 
         self._add_label(container, "Colour Closeness", row)
@@ -149,6 +162,8 @@ class SettingsPopup(tk.Toplevel):
             command=lambda v: self._on_close_change(v)
         )
         self._close_slider.grid(row=row, column=1, sticky="ew", pady=3, padx=(4, 0))
+        _Tooltip(self._close_slider,
+                 "How close a pixel must be to the target bobber colour. Higher = more lenient")
         row += 1
 
         # ── Features ──
@@ -157,89 +172,105 @@ class SettingsPopup(tk.Toplevel):
         self._auto_cal_var = tk.BooleanVar(
             value=self._parent._cfg.get("auto_calibrate", False)
         )
-        tk.Checkbutton(
+        cb = tk.Checkbutton(
             container, text="Auto-calibrate on start", variable=self._auto_cal_var,
             bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
             activebackground=PANEL_DEEP, activeforeground=ACCENT,
             padx=4, command=self._on_auto_cal
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        )
+        cb.grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        _Tooltip(cb, "Automatically calibrate bobber detection at the start of each session")
         row += 1
 
         self._stop_friendly_var = tk.BooleanVar(
             value=self._parent._cfg.get("stop_on_friendly", False)
         )
-        tk.Checkbutton(
+        cb = tk.Checkbutton(
             container, text="Stop on friendly player", variable=self._stop_friendly_var,
             bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
             activebackground=PANEL_DEEP, activeforeground=ACCENT,
             padx=4, command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        )
+        cb.grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        _Tooltip(cb, "Stop fishing when a friendly player is detected nearby")
         row += 1
 
         self._stop_enemy_var = tk.BooleanVar(
             value=self._parent._cfg.get("stop_on_enemy", False)
         )
-        tk.Checkbutton(
+        cb = tk.Checkbutton(
             container, text="Stop on enemy player", variable=self._stop_enemy_var,
             bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
             activebackground=PANEL_DEEP, activeforeground=ACCENT,
             padx=4, command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        )
+        cb.grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        _Tooltip(cb, "Stop fishing when an enemy player is detected nearby")
         row += 1
 
         self._stop_bags_var = tk.BooleanVar(
             value=self._parent._cfg.get("stop_on_bags", False)
         )
-        tk.Checkbutton(
+        cb = tk.Checkbutton(
             container, text="Stop on bags full", variable=self._stop_bags_var,
             bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
             activebackground=PANEL_DEEP, activeforeground=ACCENT,
             padx=4, command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        )
+        cb.grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        _Tooltip(cb, "Stop fishing when bags are full")
         row += 1
 
         self._auto_delete_var = tk.BooleanVar(
             value=self._parent._cfg.get("auto_delete_junk", False)
         )
-        tk.Checkbutton(
+        cb = tk.Checkbutton(
             container, text="Auto-delete junk", variable=self._auto_delete_var,
             bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
             activebackground=PANEL_DEEP, activeforeground=ACCENT,
             padx=4, command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        )
+        cb.grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        _Tooltip(cb, "Automatically delete items on the addon's junk list")
         row += 1
 
         self._topmost_var = tk.BooleanVar(
             value=self._parent._cfg.get("always_on_top", True)
         )
-        tk.Checkbutton(
+        cb = tk.Checkbutton(
             container, text="Always on top", variable=self._topmost_var,
             bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
             activebackground=PANEL_DEEP, activeforeground=ACCENT,
             padx=4, command=self._on_topmost
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        )
+        cb.grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        _Tooltip(cb, "Keep the bot window above other windows")
         row += 1
 
         self._sound_var = tk.BooleanVar(
             value=self._parent._cfg.get("sound_alerts", False)
         )
-        tk.Checkbutton(
+        cb = tk.Checkbutton(
             container, text="Sound alerts", variable=self._sound_var,
             bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
             activebackground=PANEL_DEEP, activeforeground=ACCENT,
             padx=4, command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        )
+        cb.grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        _Tooltip(cb, "Play sounds for important events like whispers, nearby players, bags full")
         row += 1
 
         self._debug_ss_var = tk.BooleanVar(
             value=self._parent._cfg.get("debug_screenshots", False)
         )
-        tk.Checkbutton(
+        cb = tk.Checkbutton(
             container, text="Debug screenshots", variable=self._debug_ss_var,
             bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
             activebackground=PANEL_DEEP, activeforeground=ACCENT,
             padx=4, command=self._on_stop_conditions
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        )
+        cb.grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+        _Tooltip(cb, "Save a screenshot when bobber detection fails, for troubleshooting")
         row += 1
 
         # ── Advanced ──
@@ -252,6 +283,8 @@ class SettingsPopup(tk.Toplevel):
         )
         btn.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
         _bind_hover(btn, PANEL_DEEP, ACCENT, TEXT_PRIMARY, "black")
+        _Tooltip(btn,
+                 "Advanced \u2014 manually set the screen region where the addon pixel bar is located")
         row += 1
 
         # Reset
@@ -262,6 +295,7 @@ class SettingsPopup(tk.Toplevel):
         )
         reset_btn.grid(row=row, column=0, columnspan=2, sticky="w", pady=(12, 0))
         _bind_hover(reset_btn, ALERT, "#ff6680")
+        _Tooltip(reset_btn, "Reset all settings to defaults")
         row += 1
 
         # --- Expandable: Colour Preview ---
@@ -272,6 +306,7 @@ class SettingsPopup(tk.Toplevel):
             command=self._toggle_preview, cursor="hand2"
         )
         self._preview_btn.grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        _Tooltip(self._preview_btn, "Preview bobber colour detection")
         row += 1
 
         self._preview_frame = tk.Frame(container, bg=BG_DARK)
@@ -286,13 +321,16 @@ class SettingsPopup(tk.Toplevel):
         )
         cap_btn.pack(side="left", padx=(0, 4))
         _bind_hover(cap_btn, PANEL_DEEP, ACCENT, TEXT_PRIMARY, "black")
+        _Tooltip(cap_btn, "Take a screenshot to preview colour detection")
         self._live_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
+        live_cb = tk.Checkbutton(
             btn_row, text="Live", variable=self._live_var,
             bg=BG_DARK, fg=TEXT_PRIMARY, selectcolor=PANEL_BG,
             activebackground=PANEL_DEEP,
             command=self._toggle_live
-        ).pack(side="left")
+        )
+        live_cb.pack(side="left")
+        _Tooltip(live_cb, "Continuously update the colour preview")
         self._match_label = tk.Label(
             btn_row, text="Matches: \u2014", bg=BG_DARK, fg=TEXT_DIM,
             font=("Consolas", 8)

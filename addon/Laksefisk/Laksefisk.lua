@@ -1,4 +1,4 @@
--- Laksefisk Pixel Bridge v8
+-- Laksefisk Pixel Bridge v9
 -- Encodes game state as coloured pixels for the fishing bot to read.
 -- Uses BINARY ONLY encoding (0 or 255 per channel) — completely immune to
 -- WoW's gamma correction. Inspired by PixelMagic's proven approach.
@@ -69,6 +69,25 @@ LaksefiskDB = LaksefiskDB or {}
 local printNearby = false
 local scanNameplates = true
 local enforceNameplates = false
+
+-- Shared key index table (must match Python KEY_INDEX_TABLE)
+-- Maps WoW key name → index for pixel encoding
+local KEY_NAME_TO_INDEX = {
+    ["1"] = 1, ["2"] = 2, ["3"] = 3, ["4"] = 4, ["5"] = 5,
+    ["6"] = 6, ["7"] = 7, ["8"] = 8, ["9"] = 9, ["0"] = 10,
+    ["F1"] = 11, ["F2"] = 12, ["F3"] = 13, ["F4"] = 14,
+    ["F5"] = 15, ["F6"] = 16, ["F7"] = 17, ["F8"] = 18,
+    ["F9"] = 19, ["F10"] = 20, ["F11"] = 21, ["F12"] = 22,
+    ["-"] = 23, ["="] = 24,
+    ["NUMPAD0"] = 25, ["NUMPAD1"] = 26, ["NUMPADADD"] = 27,
+    ["NUMPADMINUS"] = 28, ["`"] = 29, ["["] = 30, ["]"] = 31,
+}
+-- Reverse: index → WoW key name (for display in GUI)
+local KEY_INDEX_TO_NAME = {}
+for name, idx in pairs(KEY_NAME_TO_INDEX) do
+    KEY_INDEX_TO_NAME[idx] = name
+end
+KEY_INDEX_TO_NAME[0] = "None"
 
 -- Pixel textures
 local pixels = {}
@@ -318,9 +337,71 @@ local function UpdateAllPixels()
     -- [20] Enemy nearby flag
     SetPixelRaw(20, 0, 0, enemyNearby and 255 or 0)
 
-    -- Row 2: [21] Version marker — green
+end
+
+local function UpdateRow2Pixels()
+    local db = LaksefiskDB
+
+    -- [21] Version marker — green (pixel index 0 in row 2)
     SetRow2PixelRaw(0, 0, 255, 0)
 
+    -- [22] Booleans: stop_friendly, stop_enemy, stop_bags (index 1)
+    SetRow2PixelRaw(1,
+        db.stopFriendly and 255 or 0,
+        db.stopEnemy and 255 or 0,
+        db.stopBags and 255 or 0
+    )
+
+    -- [23] Booleans: auto_delete, auto_calibrate, sound_alerts (index 2)
+    SetRow2PixelRaw(2,
+        db.autoDelete and 255 or 0,
+        db.autoCalibrate and 255 or 0,
+        db.soundAlerts and 255 or 0
+    )
+
+    -- [24] colour_mode, skip_party, skip_guild (index 3)
+    SetRow2PixelRaw(3,
+        Bit(db.colourMode, 0),
+        db.skipParty and 255 or 0,
+        db.skipGuild and 255 or 0
+    )
+
+    -- [25-26] skip_friends + cast_key (5-bit) (indices 4-5)
+    -- Pixel 25: R=skip_friends, G=castKey[4], B=castKey[3]
+    local ck = math.min(db.castKeyIndex or 0, 31)
+    SetRow2PixelRaw(4,
+        db.skipFriends and 255 or 0,
+        Bit(ck, 4),
+        Bit(ck, 3)
+    )
+    -- Pixel 26: R=castKey[2], G=castKey[1], B=castKey[0]
+    SetRow2PixelRaw(5, Bit(ck, 2), Bit(ck, 1), Bit(ck, 0))
+
+    -- [27-28] lure_key (5-bit) (indices 6-7)
+    local lk = math.min(db.lureKeyIndex or 0, 31)
+    -- Pixel 27: R=lureKey[4], G=lureKey[3], B=lureKey[2]
+    SetRow2PixelRaw(6, Bit(lk, 4), Bit(lk, 3), Bit(lk, 2))
+    -- Pixel 28: R=lureKey[1], G=lureKey[0], B=waitMin[3]
+    local wmin = math.min(db.lootWaitMin or 0, 15)
+    SetRow2PixelRaw(7, Bit(lk, 1), Bit(lk, 0), Bit(wmin, 3))
+
+    -- [29] wait_min bits 2,1,0 (index 8)
+    SetRow2PixelRaw(8, Bit(wmin, 2), Bit(wmin, 1), Bit(wmin, 0))
+
+    -- [30] wait_max bits 3,2,1 (index 9)
+    local wmax = math.min(db.lootWaitMax or 0, 15)
+    SetRow2PixelRaw(9, Bit(wmax, 3), Bit(wmax, 2), Bit(wmax, 1))
+
+    -- [31] wait_max[0], col_mult[3], col_mult[2] (index 10)
+    local cm = math.min(db.colourMult or 0, 15)
+    SetRow2PixelRaw(10, Bit(wmax, 0), Bit(cm, 3), Bit(cm, 2))
+
+    -- [32] col_mult[1], col_mult[0], col_close[3] (index 11)
+    local cc = math.min(db.colourClose or 0, 15)
+    SetRow2PixelRaw(11, Bit(cm, 1), Bit(cm, 0), Bit(cc, 3))
+
+    -- [33] col_close[2], col_close[1], col_close[0] (index 12)
+    SetRow2PixelRaw(12, Bit(cc, 2), Bit(cc, 1), Bit(cc, 0))
 end
 
 ---------------------------------------------------------------------------
@@ -544,10 +625,24 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if LaksefiskDB.skipParty == nil then LaksefiskDB.skipParty = false end
         if LaksefiskDB.skipGuild == nil then LaksefiskDB.skipGuild = false end
         if LaksefiskDB.skipFriends == nil then LaksefiskDB.skipFriends = false end
+        -- Settings for pixel bridge (v2)
+        if LaksefiskDB.stopFriendly == nil then LaksefiskDB.stopFriendly = false end
+        if LaksefiskDB.stopEnemy == nil then LaksefiskDB.stopEnemy = false end
+        if LaksefiskDB.stopBags == nil then LaksefiskDB.stopBags = false end
+        if LaksefiskDB.autoDelete == nil then LaksefiskDB.autoDelete = false end
+        if LaksefiskDB.autoCalibrate == nil then LaksefiskDB.autoCalibrate = false end
+        if LaksefiskDB.soundAlerts == nil then LaksefiskDB.soundAlerts = false end
+        if LaksefiskDB.colourMode == nil then LaksefiskDB.colourMode = 0 end  -- 0=Red, 1=Blue
+        if LaksefiskDB.castKeyIndex == nil then LaksefiskDB.castKeyIndex = 4 end  -- key "4"
+        if LaksefiskDB.lureKeyIndex == nil then LaksefiskDB.lureKeyIndex = 0 end  -- None
+        if LaksefiskDB.lootWaitMin == nil then LaksefiskDB.lootWaitMin = 3 end  -- index 3 = 0.6s
+        if LaksefiskDB.lootWaitMax == nil then LaksefiskDB.lootWaitMax = 10 end -- index 10 = 2.0s
+        if LaksefiskDB.colourMult == nil then LaksefiskDB.colourMult = 3 end   -- index 3 = 0.6
+        if LaksefiskDB.colourClose == nil then LaksefiskDB.colourClose = 6 end -- index 6 = 2.0
         CreatePixelBar()
         local nDel = #LaksefiskDB.deleteList
         local cStr = LaksefiskDB.autoOpenContainers and "ON" or "OFF"
-        print("|cff4FC3F7Laksefisk|r pixel bridge v8 loaded (" .. NUM_PIXELS .. " pixels, " .. nDel .. " auto-delete, containers " .. cStr .. ")")
+        print("|cff4FC3F7Laksefisk|r pixel bridge v9 loaded (" .. NUM_PIXELS .. "+" .. ROW2_PIXELS .. " pixels, " .. nDel .. " auto-delete, containers " .. cStr .. ")")
 
     elseif event == "PLAYER_DEAD" then
         isDead = true
@@ -653,6 +748,7 @@ updateFrame:SetScript("OnUpdate", function(self, dt)
         CheckMouseoverBobber()
         if barFrame then
             UpdateAllPixels()
+            UpdateRow2Pixels()
         end
     end
     if scanElapsed >= 1.0 then

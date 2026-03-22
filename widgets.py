@@ -211,9 +211,11 @@ class _Tooltip:
         tw.wm_overrideredirect(True)
         tw.wm_attributes("-topmost", True)
         tw.wm_geometry(f"+{x}+{y}")
-        tk.Label(tw, text=self.text, justify="left", bg="#ffffe0", fg="#333",
-                 relief="solid", bd=1, font=("Segoe UI", 8),
+        tk.Label(tw, text=self.text, justify="left",
+                 bg=PANEL_DEEP, fg=TEXT_PRIMARY,
+                 relief="flat", bd=0, font=("Segoe UI", 8),
                  padx=6, pady=4, wraplength=300).pack()
+        tw.config(highlightbackground=ACCENT, highlightthickness=1)
 
     def _hide(self, _e):
         if self._tw:

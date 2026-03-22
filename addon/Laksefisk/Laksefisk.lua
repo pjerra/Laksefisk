@@ -855,6 +855,45 @@ local function CreateSettingsPanel()
     CreateSettingSlider(generalTab, 0, yOff, "Loot wait max", "lootWaitMax", 0, 15, 1,
         function(v) return string.format("%.1fs", v * 0.2) end)
 
+    -- Move bar button at bottom of General tab
+    local moveBarBtn = CreateFrame("Button", nil, generalTab, "UIPanelButtonTemplate")
+    moveBarBtn:SetPoint("BOTTOMLEFT", 0, 4)
+    moveBarBtn:SetSize(80, 22)
+    moveBarBtn:SetText("Move Bar")
+    moveBarBtn:SetScript("OnClick", function()
+        SlashCmdList["LAKSEFISK"]("move")
+    end)
+
+    -- Reset defaults button
+    local resetBtn = CreateFrame("Button", nil, generalTab, "UIPanelButtonTemplate")
+    resetBtn:SetPoint("BOTTOMRIGHT", 0, 4)
+    resetBtn:SetSize(90, 22)
+    resetBtn:SetText("Reset Defaults")
+    resetBtn:SetScript("OnClick", function()
+        LaksefiskDB.stopFriendly = false
+        LaksefiskDB.stopEnemy = false
+        LaksefiskDB.stopBags = false
+        LaksefiskDB.autoDelete = false
+        LaksefiskDB.autoCalibrate = false
+        LaksefiskDB.soundAlerts = false
+        LaksefiskDB.colourMode = 0
+        LaksefiskDB.castKeyIndex = 4
+        LaksefiskDB.lureKeyIndex = 0
+        LaksefiskDB.lootWaitMin = 3
+        LaksefiskDB.lootWaitMax = 10
+        LaksefiskDB.colourMult = 3
+        LaksefiskDB.colourClose = 6
+        -- Rebuild settings panel to reflect new values
+        if settingsFrame then
+            settingsFrame:Hide()
+            settingsFrame = nil
+            CreateSettingsPanel()
+            activeTab = 1
+            UpdateSettingsTabs()
+            settingsFrame:Show()
+        end
+    end)
+
     -- Lists tab content
     listsTab = CreateFrame("Frame", nil, contentArea)
     listsTab:SetAllPoints()
@@ -869,6 +908,49 @@ local function CreateSettingsPanel()
     CreateCheckbox(listsTab, 0, -218, "Party members", "skipParty")
     CreateCheckbox(listsTab, 0, -240, "Guild members", "skipGuild")
     CreateCheckbox(listsTab, 0, -262, "Friends list", "skipFriends")
+
+    -- Detection tab content
+    detectionTab = CreateFrame("Frame", nil, contentArea)
+    detectionTab:SetAllPoints()
+
+    local colourLabel = detectionTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    colourLabel:SetPoint("TOPLEFT", 0, 0)
+    colourLabel:SetText("|cffff8000COLOUR MODE|r")
+
+    local redBtn = CreateFrame("CheckButton", nil, detectionTab, "UIRadioButtonTemplate")
+    redBtn:SetPoint("TOPLEFT", 0, -16)
+    redBtn:SetSize(20, 20)
+    redBtn.text = redBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    redBtn.text:SetPoint("LEFT", redBtn, "RIGHT", 2, 0)
+    redBtn.text:SetText("|cffff4444Red|r")
+
+    local blueBtn = CreateFrame("CheckButton", nil, detectionTab, "UIRadioButtonTemplate")
+    blueBtn:SetPoint("TOPLEFT", 100, -16)
+    blueBtn:SetSize(20, 20)
+    blueBtn.text = blueBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    blueBtn.text:SetPoint("LEFT", blueBtn, "RIGHT", 2, 0)
+    blueBtn.text:SetText("|cff4444ffBlue|r")
+
+    local function UpdateRadios()
+        redBtn:SetChecked(LaksefiskDB.colourMode == 0)
+        blueBtn:SetChecked(LaksefiskDB.colourMode == 1)
+    end
+    UpdateRadios()
+
+    redBtn:SetScript("OnClick", function()
+        LaksefiskDB.colourMode = 0
+        UpdateRadios()
+    end)
+    blueBtn:SetScript("OnClick", function()
+        LaksefiskDB.colourMode = 1
+        UpdateRadios()
+    end)
+
+    CreateSettingSlider(detectionTab, 0, -44, "Colour multiplier", "colourMult", 0, 15, 1,
+        function(v) return string.format("%.1f", v * 0.2) end)
+
+    CreateSettingSlider(detectionTab, 0, -88, "Colour closeness", "colourClose", 0, 15, 1,
+        function(v) return string.format("%.1f", v * (5.0 / 15)) end)
 
     settingsFrame:Hide()
 
@@ -1495,6 +1577,7 @@ SlashCmdList["LAKSEFISK"] = function(msg)
         print("|cff4FC3F7Laksefisk|r commands:")
         print("  /lf show | hide | debug")
         print("  /lf status  (toggle status bar)")
+        print("  /lf settings  (toggle settings panel)")
         print("  /lf test | test2 | test3  (fake loot)")
         print("  /lf whisper | say | yell  (fake chat)")
         print("  /lf nearby  (toggle nearby player chat alerts)")

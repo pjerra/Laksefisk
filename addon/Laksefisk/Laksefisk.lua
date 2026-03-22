@@ -47,6 +47,9 @@ local originalEnemyNames = nil    -- saved UnitNameNPC cvar
 local fishingSessionActive = false
 local mouseoverBobber = false  -- true when GameTooltip shows "Fishing Bobber"
 local junkOnCursor = false
+local sessionStartTime = nil   -- GetTime() when first cast happened
+local showStatusBar = false
+local statusFrame = nil
 -- Known openable fishing containers (clams, trunks, crates, scrollcases)
 local openableContainers = {
     [5523]  = true,  -- Small Barnacled Clam
@@ -123,6 +126,24 @@ local function GetFreeBagSlots()
         free = free + (slots or 0)
     end
     return free
+end
+
+local function GetTotalBagSlots()
+    local total = 0
+    for bag = 0, 4 do
+        local slots = C_Container and C_Container.GetContainerNumSlots(bag)
+                      or GetContainerNumSlots(bag)
+        total = total + (slots or 0)
+    end
+    return total
+end
+
+local function FormatDuration(seconds)
+    if not seconds or seconds < 0 then return "0m" end
+    local h = math.floor(seconds / 3600)
+    local m = math.floor((seconds % 3600) / 60)
+    if h > 0 then return string.format("%dh %dm", h, m) end
+    return string.format("%dm", m)
 end
 
 local function EncodeItemID(itemID)
@@ -525,6 +546,115 @@ hooksecurefunc("StaticPopup_Show", function(which)
 end)
 
 ---------------------------------------------------------------------------
+-- Status bar GUI
+---------------------------------------------------------------------------
+
+local function CreateStatusBar()
+    statusFrame = CreateFrame("Frame", "LaksefiskStatus", UIParent, "BackdropTemplate")
+    statusFrame:SetSize(240, 80)
+    statusFrame:SetPoint("TOP", UIParent, "TOP", 0, -20)
+    statusFrame:SetFrameStrata("HIGH")
+    statusFrame:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 12,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    statusFrame:SetBackdropColor(0.08, 0.08, 0.08, 0.9)
+    statusFrame:SetBackdropBorderColor(0.4, 0.35, 0.2, 1)
+
+    -- Draggable
+    statusFrame:SetMovable(true)
+    statusFrame:EnableMouse(true)
+    statusFrame:RegisterForDrag("LeftButton")
+    statusFrame:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    statusFrame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        local x, y = self:GetLeft(), self:GetBottom()
+        if x and y then
+            LaksefiskDB.statusPos = { x = x, y = y }
+            self:ClearAllPoints()
+            self:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, y)
+        end
+    end)
+
+    -- Title
+    statusFrame.title = statusFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    statusFrame.title:SetPoint("TOPLEFT", 8, -6)
+    statusFrame.title:SetText("|cffff8000Laksefisk|r")
+
+    -- State label
+    statusFrame.state = statusFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    statusFrame.state:SetPoint("TOPRIGHT", -8, -6)
+
+    -- Line 1: Caught / Last item
+    statusFrame.line1 = statusFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    statusFrame.line1:SetPoint("TOPLEFT", 8, -22)
+    statusFrame.line1:SetWidth(224)
+    statusFrame.line1:SetJustifyH("LEFT")
+
+    -- Line 2: Time / Bags
+    statusFrame.line2 = statusFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    statusFrame.line2:SetPoint("TOPLEFT", 8, -36)
+    statusFrame.line2:SetWidth(224)
+    statusFrame.line2:SetJustifyH("LEFT")
+
+    -- Line 3: Alerts
+    statusFrame.line3 = statusFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    statusFrame.line3:SetPoint("TOPLEFT", 8, -50)
+    statusFrame.line3:SetWidth(224)
+    statusFrame.line3:SetJustifyH("LEFT")
+
+    -- Restore position
+    local saved = LaksefiskDB.statusPos
+    if saved and saved.x and saved.y then
+        statusFrame:ClearAllPoints()
+        statusFrame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", saved.x, saved.y)
+    end
+
+    statusFrame:Hide()
+end
+
+local function UpdateStatusBar()
+    if not statusFrame or not showStatusBar then return end
+
+    -- State
+    local stateText, stateColor
+    if isDead then
+        stateText = "Dead"
+        stateColor = "|cffff4444"
+    elseif UnitAffectingCombat("player") then
+        stateText = "Combat"
+        stateColor = "|cffff8800"
+    elseif isFishing then
+        stateText = "Fishing"
+        stateColor = "|cff44ff44"
+    else
+        stateText = "Idle"
+        stateColor = "|cff888888"
+    end
+    statusFrame.state:SetText(stateColor .. stateText .. "|r")
+
+    -- Line 1: Caught + last item
+    local itemStr = lastItemName ~= "" and ("|cff1eff00" .. lastItemName .. "|r") or ""
+    statusFrame.line1:SetText("Caught: |cffffffff" .. lootCounter .. "|r  " .. itemStr)
+
+    -- Line 2: Time + bags
+    local duration = sessionStartTime and (GetTime() - sessionStartTime) or 0
+    local free = GetFreeBagSlots()
+    local total = GetTotalBagSlots()
+    local used = total - free
+    statusFrame.line2:SetText("Time: |cffffffff" .. FormatDuration(duration) .. "|r  Bags: |cffffffff" .. used .. "/" .. total .. "|r")
+
+    -- Line 3: Alerts
+    local alerts = {}
+    if playerNearby then table.insert(alerts, "|cffff4444Player nearby|r") end
+    if enemyNearby then table.insert(alerts, "|cffff4444Enemy nearby|r") end
+    if GetFreeBagSlots() <= 2 then table.insert(alerts, "|cffffcc00Bags full|r") end
+    statusFrame.line3:SetText(#alerts > 0 and table.concat(alerts, "  ") or "")
+end
+
+---------------------------------------------------------------------------
 -- Create the pixel bar
 ---------------------------------------------------------------------------
 
@@ -640,6 +770,12 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if LaksefiskDB.colourMult == nil then LaksefiskDB.colourMult = 3 end   -- index 3 = 0.6
         if LaksefiskDB.colourClose == nil then LaksefiskDB.colourClose = 6 end -- index 6 = 2.0
         CreatePixelBar()
+        CreateStatusBar()
+        -- Restore status bar visibility
+        if LaksefiskDB.showStatusBar then
+            showStatusBar = true
+            if statusFrame then statusFrame:Show() end
+        end
         local nDel = #LaksefiskDB.deleteList
         local cStr = LaksefiskDB.autoOpenContainers and "ON" or "OFF"
         print("|cff4FC3F7Laksefisk|r pixel bridge v9 loaded (" .. NUM_PIXELS .. "+" .. ROW2_PIXELS .. " pixels, " .. nDel .. " auto-delete, containers " .. cStr .. ")")
@@ -690,6 +826,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             if name and (name == "Fishing" or name == "Fiske") then
                 isFishing = true
                 castCounter = castCounter + 1
+                if not sessionStartTime then
+                    sessionStartTime = GetTime()
+                end
                 -- Save original settings on first cast
                 if not fishingSessionActive then
                     originalEnemyNP = GetCVar("nameplateShowEnemies")
@@ -749,6 +888,7 @@ updateFrame:SetScript("OnUpdate", function(self, dt)
         if barFrame then
             UpdateAllPixels()
             UpdateRow2Pixels()
+            UpdateStatusBar()
         end
     end
     if scanElapsed >= 1.0 then
@@ -990,9 +1130,19 @@ SlashCmdList["LAKSEFISK"] = function(msg)
         LaksefiskDB.barPos = nil
         print("|cff4FC3F7Laksefisk|r pixel bar reset to default position")
 
+    elseif cmd == "status" then
+        showStatusBar = not showStatusBar
+        LaksefiskDB.showStatusBar = showStatusBar
+        if showStatusBar then
+            if statusFrame then statusFrame:Show() end
+        else
+            if statusFrame then statusFrame:Hide() end
+        end
+
     else
         print("|cff4FC3F7Laksefisk|r commands:")
         print("  /lf show | hide | debug")
+        print("  /lf status  (toggle status bar)")
         print("  /lf test | test2 | test3  (fake loot)")
         print("  /lf whisper | say | yell  (fake chat)")
         print("  /lf nearby  (toggle nearby player chat alerts)")

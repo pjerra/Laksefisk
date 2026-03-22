@@ -615,7 +615,10 @@ local function CreateSettingSlider(parent, x, y, label, dbKey, minVal, maxVal, s
 
     container.slider = slider
     container.dbKey = dbKey
-    if tooltip then AddTooltip(container, label, tooltip) end
+    if tooltip then
+        container:EnableMouse(true)
+        AddTooltip(container, label, tooltip)
+    end
     return container
 end
 
@@ -661,7 +664,10 @@ local function CreateKeyCaptureButton(parent, x, y, label, dbKey, tooltip)
 
     container.btn = btn
     container.dbKey = dbKey
-    if tooltip then AddTooltip(container, label, tooltip) end
+    if tooltip then
+        container:EnableMouse(true)
+        AddTooltip(container, label, tooltip)
+    end
     return container
 end
 

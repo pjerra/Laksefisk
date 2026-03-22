@@ -130,3 +130,92 @@ class WowLogin:
         px = int(rel_x * w) + origin[0] + _rng.randint(-3, 3)
         py = int(rel_y * h) + origin[1] + _rng.randint(-3, 3)
         return (px, py)
+
+    def login(self, slot: int = 1, timeout: int = 60) -> bool:
+        """Log in from character select screen.
+
+        Clicks the character slot, then "Enter World", and waits for
+        the pixel bridge to confirm we're in-world.
+
+        Args:
+            slot: Character slot number (1-10, top to bottom).
+            timeout: Maximum seconds to wait for login to complete.
+
+        Returns:
+            True if successfully entered world, False on timeout/failure.
+        """
+        start = time.monotonic()
+
+        # Already in world?
+        state = self.detect_state()
+        if state == "in_world":
+            logger.info("Login: already in-world")
+            return True
+
+        if state == "no_window":
+            logger.error("Login: WoW window not found")
+            return False
+
+        # Wait for character select screen
+        if state != "character_select":
+            logger.info("Login: waiting for character select screen...")
+            if not self._wait_for_state("character_select", timeout=10):
+                logger.error("Login: character select screen not detected")
+                return False
+
+        remaining = timeout - (time.monotonic() - start)
+        if remaining <= 0:
+            return False
+
+        # Bring WoW to foreground
+        wow_process.set_foreground()
+
+        # Click character slot
+        slot_y = _CHAR_LIST_TOP_Y + (slot - 1) * _CHAR_SLOT_SPACING
+        slot_pos = self._relative_to_screen(_CHAR_LIST_X, slot_y)
+        logger.info(f"Login: clicking slot {slot} at {slot_pos}")
+        wow_process.left_click_at(slot_pos)
+        time.sleep(_rng.uniform(0.3, 0.8))
+
+        # Click "Enter World"
+        enter_pos = self._relative_to_screen(_ENTER_WORLD_X, _ENTER_WORLD_Y)
+        logger.info(f"Login: clicking Enter World at {enter_pos}")
+        wow_process.left_click_at(enter_pos)
+        time.sleep(_rng.uniform(0.5, 1.0))
+
+        remaining = timeout - (time.monotonic() - start)
+        if remaining <= 0:
+            return False
+
+        # Retry once if still on character select after 5s
+        retry_deadline = time.monotonic() + min(5.0, remaining)
+        while time.monotonic() < retry_deadline:
+            state = self.detect_state()
+            if state == "in_world":
+                logger.info("Login: entered world successfully")
+                time.sleep(2.0)  # settle delay for addon init
+                return True
+            if state != "character_select":
+                break  # loading screen — proceed to main wait
+            time.sleep(1.0)
+
+        if state == "character_select":
+            # Retry click sequence
+            logger.info("Login: retrying click sequence")
+            wow_process.set_foreground()
+            slot_pos = self._relative_to_screen(_CHAR_LIST_X, slot_y)
+            wow_process.left_click_at(slot_pos)
+            time.sleep(_rng.uniform(0.3, 0.8))
+            enter_pos = self._relative_to_screen(_ENTER_WORLD_X, _ENTER_WORLD_Y)
+            wow_process.left_click_at(enter_pos)
+            time.sleep(_rng.uniform(0.5, 1.0))
+
+        # Wait for in-world
+        remaining = timeout - (time.monotonic() - start)
+        if remaining > 0 and self._wait_for_state("in_world", remaining):
+            logger.info("Login: entered world successfully")
+            time.sleep(2.0)  # settle delay for addon init
+            return True
+
+        logger.error(f"Login: timed out after {timeout}s")
+        return False

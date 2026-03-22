@@ -4,12 +4,18 @@ Auto login/logout — automates WoW character select and /logout.
 Detects screen state (in-world, character select, loading, no window)
 using pixel bridge for in-world and colour sampling for character select.
 All UI positions are relative to window size (resolution-independent).
+
+Note: Character select detection uses ImageGrab (full-screen capture) because
+PrintWindow does not capture the WoW UI overlay at the character select screen.
+Click coordinates use the logical window size via WowScreen (for SetCursorPos).
 """
 
 import logging
 import random
 import time
-from typing import Optional, Tuple
+from typing import Tuple
+
+from PIL import ImageGrab
 
 import wow_process
 from pixel_bridge import PixelBridge
@@ -21,32 +27,32 @@ _rng = random.Random()
 # ---------------------------------------------------------------------------
 # Character select screen detection
 # ---------------------------------------------------------------------------
-# Relative positions (fraction of client width/height) and expected RGB values
-# for TBC Anniversary Classic character select screen.
+# Relative positions (fraction of screen) and expected RGB values for
+# TBC Anniversary Classic character select screen.
 #
-# These MUST be measured from actual screenshots. Placeholder values below —
-# update after capturing screenshots at character select.
+# Measured from full-screen ImageGrab at 1920x1200 (125% DPI).
+# Relative positions are resolution/DPI independent.
 #
 # Each probe: (rel_x, rel_y, (R, G, B))
 # ---------------------------------------------------------------------------
-_CHARSELECT_PROBES: list[Tuple[float, float, Tuple[int, int, int]]] = [
-    # "Enter World" button centre — gold/yellow text area
-    (0.50, 0.91, (180, 160, 80)),
-    # Character list background — dark pane left side
-    (0.25, 0.50, (20, 15, 15)),
-    # Bottom bar — dark UI frame below button
-    (0.50, 0.96, (30, 25, 20)),
+_CHARSELECT_PROBES = [
+    # "Enter World" button — red button at bottom centre
+    (0.50, 0.92, (106, 6, 3)),
+    # Character list panel background — dark gray on right side
+    (0.85, 0.20, (25, 25, 25)),
+    # Bottom bar area — dark brownish below Enter World
+    (0.50, 0.95, (75, 69, 60)),
 ]
-_COLOUR_TOLERANCE = 20  # per channel — matches pixel_bridge.py and spec
+_COLOUR_TOLERANCE = 30  # per channel — generous for DPI/gamma variance
 
-# Character slot relative positions
-_CHAR_LIST_X = 0.50        # character names are centred horizontally
-_CHAR_LIST_TOP_Y = 0.35    # first slot Y position (to be validated)
-_CHAR_SLOT_SPACING = 0.055  # vertical spacing between slots (to be validated)
+# Character slot positions (right-side panel in TBC Anniversary)
+_CHAR_LIST_X = 0.85       # character list is on the right side
+_CHAR_LIST_TOP_Y = 0.12   # first character entry Y
+_CHAR_SLOT_SPACING = 0.06  # vertical spacing between entries
 
 # "Enter World" button
 _ENTER_WORLD_X = 0.50
-_ENTER_WORLD_Y = 0.91
+_ENTER_WORLD_Y = 0.92
 
 
 def _colour_match(actual: Tuple[int, int, int],
@@ -67,6 +73,10 @@ class WowLogin:
         """Detect current WoW screen state.
 
         Returns one of: 'in_world', 'character_select', 'unknown', 'no_window'.
+
+        Uses pixel bridge for in-world detection. Uses ImageGrab (full-screen
+        capture) for character select detection because PrintWindow does not
+        capture the WoW UI overlay at the character select screen.
         """
         # Try pixel bridge first — if it reads, we're in-world
         try:
@@ -76,24 +86,27 @@ class WowLogin:
         except Exception:
             pass
 
-        # Check if WoW window exists
-        img = self._screen.capture_full()
-        if img is None:
+        # Check if WoW window exists (via process scan)
+        hwnd = wow_process.get_wow_hwnd()
+        if hwnd is None:
             return "no_window"
+
+        # Capture full screen (ImageGrab captures UI overlays that PrintWindow misses)
+        try:
+            img = ImageGrab.grab()
+        except Exception:
+            return "unknown"
 
         # Sample character select probe points
         try:
             w, h = img.size
             matches = 0
             for rel_x, rel_y, expected_rgb in _CHARSELECT_PROBES:
-                px = int(rel_x * w)
-                py = int(rel_y * h)
-                px = max(0, min(px, w - 1))
-                py = max(0, min(py, h - 1))
+                px = max(0, min(int(rel_x * w), w - 1))
+                py = max(0, min(int(rel_y * h), h - 1))
                 actual = img.getpixel((px, py))[:3]
                 if _colour_match(actual, expected_rgb):
                     matches += 1
-            # Require at least 2 of 3 probes to match
             if matches >= 2:
                 return "character_select"
         except Exception:
@@ -108,21 +121,24 @@ class WowLogin:
         """Poll detect_state until target is reached or timeout expires."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.detect_state() == target:
+            state = self.detect_state()
+            if state == target:
                 return True
+            if state == "no_window":
+                logger.warning("_wait_for_state: WoW window disappeared")
+                return False
             time.sleep(poll_interval)
         return False
 
     def _relative_to_screen(self, rel_x: float, rel_y: float) -> Tuple[int, int]:
-        """Convert relative window position to absolute screen coordinates.
+        """Convert relative position to absolute screen coordinates for clicking.
 
-        Refreshes geometry via capture_full to ensure origin is current
-        (handles window being moved between calls).
+        Uses logical window size from WowScreen (matches SetCursorPos coordinates).
+        Adds small random offset for human-like behaviour.
         """
-        # Refresh geometry — capture_full calls _update_geometry internally
-        img = self._screen.capture_full()
-        if img is not None:
-            img.close()
+        # Refresh geometry
+        self._screen._refresh_hwnd()
+        self._screen._update_geometry()
         w, h = self._screen.client_size
         origin = self._screen.client_origin
         px = int(rel_x * w) + origin[0] + _rng.randint(-3, 3)
@@ -168,7 +184,7 @@ class WowLogin:
         # Bring WoW to foreground
         wow_process.set_foreground()
 
-        # Click character slot
+        # Click character slot (right-side panel)
         slot_y = _CHAR_LIST_TOP_Y + (slot - 1) * _CHAR_SLOT_SPACING
         slot_pos = self._relative_to_screen(_CHAR_LIST_X, slot_y)
         logger.info(f"Login: clicking slot {slot} at {slot_pos}")
@@ -215,7 +231,8 @@ class WowLogin:
             time.sleep(2.0)  # settle delay for addon init
             return True
 
-        logger.error(f"Login: timed out after {timeout}s")
+        elapsed = time.monotonic() - start
+        logger.error(f"Login: timed out after {elapsed:.1f}s (limit {timeout}s)")
         return False
 
     def logout(self, timeout: int = 30) -> bool:
@@ -260,9 +277,10 @@ class WowLogin:
 
         # Check if we're still in-world (logout may have been interrupted)
         state = self.detect_state()
+        elapsed = time.monotonic() - start
         if state == "in_world":
-            logger.warning("Logout: still in-world — logout may have been interrupted")
+            logger.warning(f"Logout: still in-world after {elapsed:.1f}s — may have been interrupted")
         else:
-            logger.error(f"Logout: timed out in state '{state}'")
+            logger.error(f"Logout: timed out in state '{state}' after {elapsed:.1f}s")
 
         return False

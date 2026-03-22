@@ -651,6 +651,97 @@ end
 local UpdateSettingsTabs  -- forward declaration
 local generalTab, listsTab, detectionTab  -- tab content frames
 
+local function CreateEditableList(parent, x, y, height, label, dbKey)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetPoint("TOPLEFT", x, y)
+    container:SetSize(230, height)
+
+    local text = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    text:SetPoint("TOPLEFT", 0, 0)
+    text:SetText("|cffff8000" .. label .. "|r")
+
+    -- Scroll frame for list items
+    local scrollFrame = CreateFrame("ScrollFrame", nil, container, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", 0, -16)
+    scrollFrame:SetSize(210, height - 46)
+
+    local content = CreateFrame("Frame", nil, scrollFrame)
+    content:SetSize(200, 1)
+    scrollFrame:SetScrollChild(content)
+
+    -- Input row
+    local editBox = CreateFrame("EditBox", nil, container, "InputBoxTemplate")
+    editBox:SetPoint("BOTTOMLEFT", 0, 0)
+    editBox:SetSize(140, 20)
+    editBox:SetAutoFocus(false)
+
+    local addBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
+    addBtn:SetPoint("LEFT", editBox, "RIGHT", 4, 0)
+    addBtn:SetSize(40, 20)
+    addBtn:SetText("Add")
+
+    local clearBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
+    clearBtn:SetPoint("LEFT", addBtn, "RIGHT", 2, 0)
+    clearBtn:SetSize(42, 20)
+    clearBtn:SetText("Clear")
+
+    local function RefreshList()
+        -- Clear existing children
+        for _, child in pairs({content:GetChildren()}) do
+            child:Hide()
+            child:SetParent(nil)
+        end
+        local list = LaksefiskDB[dbKey] or {}
+        local yPos = 0
+        for i, name in ipairs(list) do
+            local row = CreateFrame("Frame", nil, content)
+            row:SetSize(200, 16)
+            row:SetPoint("TOPLEFT", 0, -yPos)
+            local nameStr = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            nameStr:SetPoint("LEFT", 2, 0)
+            nameStr:SetText(name)
+            local removeBtn = CreateFrame("Button", nil, row)
+            removeBtn:SetSize(14, 14)
+            removeBtn:SetPoint("RIGHT", -2, 0)
+            removeBtn:SetNormalTexture("Interface\\Buttons\\UI-StopButton")
+            removeBtn:SetScript("OnClick", function()
+                table.remove(LaksefiskDB[dbKey], i)
+                RefreshList()
+            end)
+            yPos = yPos + 16
+        end
+        content:SetHeight(math.max(1, yPos))
+    end
+
+    addBtn:SetScript("OnClick", function()
+        local val = editBox:GetText()
+        if val and val ~= "" then
+            val = string.match(val, "%[(.-)%]") or val
+            val = val:gsub("^%s+", ""):gsub("%s+$", "")
+            if val ~= "" then
+                LaksefiskDB[dbKey] = LaksefiskDB[dbKey] or {}
+                table.insert(LaksefiskDB[dbKey], val)
+                editBox:SetText("")
+                RefreshList()
+            end
+        end
+    end)
+
+    editBox:SetScript("OnEnterPressed", function()
+        addBtn:Click()
+    end)
+
+    clearBtn:SetScript("OnClick", function()
+        LaksefiskDB[dbKey] = {}
+        RefreshList()
+    end)
+
+    container.Refresh = RefreshList
+    C_Timer.After(0, RefreshList)  -- initial populate
+
+    return container
+end
+
 local function CreateSettingsPanel()
     settingsFrame = CreateFrame("Frame", "LaksefiskSettings", UIParent, "BackdropTemplate")
     settingsFrame:SetSize(260, 340)
@@ -763,6 +854,21 @@ local function CreateSettingsPanel()
     yOff = yOff - 40
     CreateSettingSlider(generalTab, 0, yOff, "Loot wait max", "lootWaitMax", 0, 15, 1,
         function(v) return string.format("%.1fs", v * 0.2) end)
+
+    -- Lists tab content
+    listsTab = CreateFrame("Frame", nil, contentArea)
+    listsTab:SetAllPoints()
+
+    CreateEditableList(listsTab, 0, 0, 100, "AUTO-DELETE LIST", "deleteList")
+    CreateEditableList(listsTab, 0, -106, 90, "PLAYER WHITELIST", "whitelist")
+
+    local skipLabel = listsTab:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    skipLabel:SetPoint("TOPLEFT", 0, -202)
+    skipLabel:SetText("|cffff8000AUTO-SKIP (don't pause for)|r")
+
+    CreateCheckbox(listsTab, 0, -218, "Party members", "skipParty")
+    CreateCheckbox(listsTab, 0, -240, "Guild members", "skipGuild")
+    CreateCheckbox(listsTab, 0, -262, "Friends list", "skipFriends")
 
     settingsFrame:Hide()
 

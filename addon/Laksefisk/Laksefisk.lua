@@ -1557,7 +1557,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 end)
             end
             -- Auto-delete if on the junk list
-            if ShouldDelete(itemName) then
+            if LaksefiskDB.autoDelete and ShouldDelete(itemName) then
                 -- Small delay to let the item land in bags
                 C_Timer.After(0.5, function()
                     DeleteFromBags(itemName)

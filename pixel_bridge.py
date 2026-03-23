@@ -127,6 +127,7 @@ class PixelBridgeData:
     s_colour_multiplier: float = 1.0
     s_colour_closeness_multiplier: float = 1.0
     s_calibration_toggle: bool = False
+    s_sliders_override: bool = False
 
 
 def _colour_match(actual, expected):
@@ -439,6 +440,7 @@ class PixelBridge:
             data.s_colour_multiplier = settings["colour_multiplier"]
             data.s_colour_closeness_multiplier = settings["colour_closeness_multiplier"]
             data.s_calibration_toggle = settings["calibration_toggle"]
+            data.s_sliders_override = settings["sliders_override"]
 
         self._last_data = data
         return data
@@ -491,6 +493,9 @@ class PixelBridge:
         p35_r, p35_g, p35_b = rp2(14)
         calibration_toggle = p35_b > 128
 
+        p36_r, _, _ = rp2(15)
+        sliders_override = p36_r > 128
+
         # Decode key indices to VK codes
         cast_vk = KEY_INDEX_TABLE[cast_key_idx] if cast_key_idx < len(KEY_INDEX_TABLE) else None
         lure_vk = KEY_INDEX_TABLE[lure_key_idx] if lure_key_idx < len(KEY_INDEX_TABLE) else None
@@ -513,6 +518,7 @@ class PixelBridge:
             "colour_multiplier": round(col_mult_raw * 0.1, 1),
             "colour_closeness_multiplier": round(col_close_raw * 0.1, 1),
             "calibration_toggle": calibration_toggle,
+            "sliders_override": sliders_override,
         }
 
     def _capture_bottom_strip(self):

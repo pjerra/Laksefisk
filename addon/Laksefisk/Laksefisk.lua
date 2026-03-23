@@ -22,7 +22,7 @@ local PIXEL_GAP = 0
 local PIXEL_STEP = PIXEL_SIZE + PIXEL_GAP
 local NUM_PIXELS = 21       -- 0-7 control + 8-13 item ID + 14-16 bait + 17-19 hp + 20 enemy
 local BAR_Y_OFFSET = 120
-local ROW2_PIXELS = 15      -- settings pixels in row 2
+local ROW2_PIXELS = 16      -- settings pixels in row 2
 local ITEM_ID_START = 8     -- first pixel index for item ID
 local ITEM_ID_PIXELS = 6   -- 6 pixels × 3 bits = 18 bits
 local BAIT_START = 14
@@ -449,6 +449,9 @@ local function UpdateRow2Pixels()
     -- [35] colClose[1], colClose[0], calibrationToggle (index 14)
     SetRow2PixelRaw(14, Bit(cc, 1), Bit(cc, 0),
         db.calibrationToggle and 255 or 0)
+
+    -- [36] slidersOverride (index 15)
+    SetRow2PixelRaw(15, db.slidersOverride and 255 or 0, 0, 0)
 end
 
 ---------------------------------------------------------------------------
